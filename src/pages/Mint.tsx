@@ -762,7 +762,9 @@ const Mint: Component = () => {
       // what it advertised in the first place), and the note being minted
       // is worth exactly maxWithdrawable regardless - better to say so
       // plainly than let a silent mismatch pass
-      const noteInfo = await fetchNoteInfo(declaredUrl)
+      const noteInfo = await fetchNoteInfo(declaredUrl, {
+        allowSecretFallback: true
+      })
       if (noteInfo.maxWithdrawable !== expectedNetMsat) {
         notify(
           `Amount changed: expected a ${msatToSats(expectedNetMsat)} sat note, the service reports ${msatToSats(noteInfo.maxWithdrawable)} sats.`,

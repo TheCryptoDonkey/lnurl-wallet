@@ -212,7 +212,10 @@ export const deviceSettle = async (
           await client.exportSecret(pending.deviceId),
           pending.amountMsat,
           pending.signature
-        )
+        ),
+        // the secret was exported to build this URL, so it is going to this
+        // host either way
+        {allowSecretFallback: true}
       )
   return {
     ...pending,
@@ -242,7 +245,9 @@ export const deviceRefresh = async (
   bearer: {deviceId: string; url: string; amount: number}
 ): Promise<DeviceRefreshResult> => {
   const k1 = await client.exportSecret(bearer.deviceId)
-  const info = await fetchNoteInfo(withNewK1(bearer.url, k1, bearer.amount))
+  const info = await fetchNoteInfo(withNewK1(bearer.url, k1, bearer.amount), {
+    allowSecretFallback: true
+  })
   const rotated = await rotateK1OnDevice(
     client,
     {url: bearer.url, callback: info.callback},

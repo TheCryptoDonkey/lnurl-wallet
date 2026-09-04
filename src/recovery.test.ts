@@ -134,6 +134,48 @@ describe('scanMintForNotes', () => {
     expect(result.error).toBeUndefined()
   })
 
+  // The regression this two-pass scan exists for. LUD-25 leaves the hash
+  // lookup OPTIONAL, so a perfectly conforming mint may answer only k1 - and
+  // to a hash probe it says exactly what a mint holding none of your notes
+  // says. Asking by hash alone, every index reads as an empty gap and a
+  // restore reports "no notes" against a mint that is holding them.
+  it('recovers from a mint that only answers by k1', async () => {
+    const liveSecret = cashSecrets.cashSecretAtIndex(SERVER, 0)!
+    vi.stubGlobal('fetch', ((input: string | URL) => {
+      const url = new URL(input.toString())
+      if (url.pathname === '/.well-known/lnurlp/mint') {
+        return fakeMint(-1, null)(input)
+      }
+      // no hash index: every h lookup is answered as an unknown note,
+      // which is what the spec says such a mint does
+      if (url.searchParams.get('k1') === liveSecret) {
+        return jsonResponse({
+          tag: 'withdrawRequest',
+          callback: WITHDRAW_CALLBACK,
+          mintPubkey: MINT_PUBKEY,
+          k1: liveSecret,
+          minWithdrawable: 21000,
+          maxWithdrawable: 21000
+        })
+      }
+      return jsonResponse({status: 'ERROR', reason: 'Unknown note.'})
+    }) as unknown as typeof fetch)
+    const result = await recovery.scanMintForNotes(`mint@${SERVER}`)
+    expect(result.error).toBeUndefined()
+    expect(result.recovered).toHaveLength(1)
+    expect(result.recovered[0].amount).toBe(21000)
+  })
+
+  // ...and the mint that genuinely holds nothing still reports nothing,
+  // rather than being warned about on the strength of the same silence.
+  it('still reports an empty mint as empty, not as unanswerable', async () => {
+    vi.stubGlobal('fetch', fakeMint(-1, null) as unknown as typeof fetch)
+    const result = await recovery.scanMintForNotes(`mint@${SERVER}`)
+    expect(result.error).toBeUndefined()
+    expect(result.recovered).toHaveLength(0)
+    expect(result.highestUsedIndex).toBeNull()
+  })
+
   it('reports an unresolvable address without ever calling fetch', async () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)

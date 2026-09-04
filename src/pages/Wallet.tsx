@@ -564,7 +564,7 @@ const Wallet: Component = () => {
         return
       }
 
-      const info = await fetchNoteInfo(bearer.url)
+      const info = await fetchNoteInfo(bearer.url, {allowSecretFallback: true})
 
       if (client) {
         const migrated = await migrateNoteToDevice(client, {

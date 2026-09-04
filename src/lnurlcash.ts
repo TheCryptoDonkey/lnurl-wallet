@@ -747,8 +747,35 @@ export const fetchNoteInfoByHash = async (
 // when an older SERVICE explicitly reports that k1 is the missing/required
 // parameter.  Unknown/spent replies and transport failures never trigger a
 // secret-revealing retry.
+// Whether this lookup may fall back to putting the bearer secret on the wire
+// when the hash lookup comes back unknown.
+//
+// LUD-25 makes the h lookup OPTIONAL and gives it no capability flag, and is
+// explicit about the cost: a SERVICE that does not index by hash "answers
+// every lookup exactly as it answers an unknown note". So an unknown reply to
+// an h lookup means EITHER the note is not there OR this SERVICE never
+// supported the lookup, and nothing in the reply separates them.
+//
+// Reading it as "not there" would make every note at a k1-only mint look gone.
+// Retrying with k1 fixes that but hands the bearer secret to a host that just
+// said it knows nothing - which is exactly the wrong move if the host is the
+// wrong one.
+//
+// So the choice is the caller's, because only the caller knows which it is
+// about to do. A path that immediately rotates is sending k1 to that host in
+// the next breath anyway and loses nothing by asking with it; a pure read -
+// refreshing a balance, walking a derivation during restore - loses the whole
+// point of asking by hash, and must instead surface the ambiguity rather than
+// report the note gone.
+export type NoteLookupOptions = {
+  /** Retry with k1 when the hash lookup reports the note unknown. Only for
+   *  callers about to disclose k1 to this same host regardless. */
+  allowSecretFallback?: boolean
+}
+
 export const fetchNoteInfo = async (
-  url: string
+  url: string,
+  options: NoteLookupOptions = {}
 ): Promise<WithdrawRequestInfo> => {
   // A device-backed bearer deliberately keeps only a secret-free mirror URL
   // in browser storage. Never send that mirror to /w: SERVICE quite rightly
@@ -762,12 +789,22 @@ export const fetchNoteInfo = async (
     const info = await requestNoteInfoByHash(rawUrl.toString(), hashK1(queried))
     return {...info, k1: queried}
   } catch (err) {
+    const classified = classifyNoteError(err as Error)
+    // An older SERVICE that wants k1 by name says so, and that is worth
+    // honouring whatever the caller asked for: it is a straight protocol
+    // mismatch, not an ambiguous answer about a note.
     const missingK1 =
       err instanceof ServiceError &&
       /(?:missing|required|specify).{0,40}\bk1\b|\bk1\b.{0,40}(?:missing|required)/i.test(
         err.reason
       )
-    if (!missingK1) throw classifyNoteError(err as Error)
+    // Unknown is the ambiguous one - see NoteLookupOptions. Spent is
+    // authoritative and never retried, and a transport failure is no evidence
+    // either way.
+    const ambiguouslyUnknown =
+      classified instanceof NoteUnknownError &&
+      options.allowSecretFallback === true
+    if (!missingK1 && !ambiguouslyUnknown) throw classified
   }
   let body: any
   try {
@@ -800,7 +837,7 @@ export const probeBurnedNote = async (
   url: string
 ): Promise<'live' | 'gone' | 'unknown'> => {
   try {
-    await fetchNoteInfo(url)
+    await fetchNoteInfo(url, {allowSecretFallback: true})
     return 'live'
   } catch (err) {
     if (err instanceof NoteSpentError || err instanceof NoteUnknownError) {

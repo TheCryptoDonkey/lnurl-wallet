@@ -709,8 +709,13 @@ describe('receiveNote surfaces a definitive spent/unknown report', () => {
     await rotateNote(WITHDRAW_CALLBACK, k1) // burns k1
 
     const url = buildNoteUrl(WITHDRAW_URL, k1, 1000)
+    // Spent, not merely unknown. The hash lookup has to report a burned note
+    // exactly as it reports one it never held - that non-disclosure is the
+    // point of asking by hash - so on its own it can only say "unknown". A
+    // receive rotates the note in the next breath, so it is allowed to ask
+    // again with k1, and to that the mint gives the authoritative answer.
     await expect(receiveNote(toBech32Lnurl(url), [])).rejects.toBeInstanceOf(
-      NoteUnknownError
+      NoteSpentError
     )
   })
 

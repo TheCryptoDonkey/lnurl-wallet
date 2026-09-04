@@ -41,7 +41,8 @@ export const receiveNote = async (
     throw new Error('This note is already in your wallet.')
   }
   try {
-    const info = await fetchNoteInfo(url)
+    // rotated immediately below, so k1 reaches this host regardless
+    const info = await fetchNoteInfo(url, {allowSecretFallback: true})
     return {
       url,
       callback: info.callback,

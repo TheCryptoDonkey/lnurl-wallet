@@ -67,8 +67,41 @@ export type MintScanResult = {
 // a service that didn't ask for a burst of requests. onProgress, when
 // given, is called with each index right before it's probed, so a caller
 // can show live scanning progress.
+// A wholly silent walk - no note found, no index proved used - means one of
+// two things, and LUD-25 gives no way to tell them apart from the replies. The
+// hash lookup is OPTIONAL and has no capability flag, so a mint that does not
+// index by hash answers every probe exactly as a mint holding none of your
+// notes does.
+//
+// Reading it as "you have nothing" would tell a holder their money was gone
+// whenever their mint had not implemented an optional feature. So a silent
+// walk is repeated once with the bearer secret, which settles it: a k1-only
+// mint answers properly and the notes are recovered, and a mint that really
+// holds nothing says unknown again.
+//
+// The disclosure costs nothing in the case that actually happens. The only
+// secrets sent are for derivation indexes the first pass just established
+// hold no note - there is nothing there to expose - and this runs only during
+// a restore, where the holder is deliberately reconnecting to that mint with
+// their own seed.
 export const scanMintForNotes = async (
   input: string,
+  onProgress?: (index: number) => void
+): Promise<MintScanResult> => {
+  const quiet = await scanMintPass(input, false, onProgress)
+  if (
+    quiet.error ||
+    quiet.recovered.length > 0 ||
+    quiet.highestUsedIndex !== null
+  ) {
+    return quiet
+  }
+  return scanMintPass(input, true, onProgress)
+}
+
+const scanMintPass = async (
+  input: string,
+  allowSecretFallback: boolean,
   onProgress?: (index: number) => void
 ): Promise<MintScanResult> => {
   const payUrl = resolveMintInput(input)
@@ -120,7 +153,9 @@ export const scanMintForNotes = async (
     }
     onProgress?.(index)
     try {
-      const note = await fetchNoteInfo(buildNoteUrl(withdrawLink, secret))
+      const note = await fetchNoteInfo(buildNoteUrl(withdrawLink, secret), {
+        allowSecretFallback
+      })
       recovered.push({
         url: buildNoteUrl(withdrawLink, secret, note.maxWithdrawable),
         callback: note.callback,

@@ -254,7 +254,9 @@ const TransferDialog: Component<TransferDialogProps> = props => {
         noteSecret,
         props.sourceBearer.amount
       )
-      const noteInfo = await fetchNoteInfo(declaredUrl)
+      const noteInfo = await fetchNoteInfo(declaredUrl, {
+        allowSecretFallback: true
+      })
 
       const client = deviceClient()
       if (client) {
