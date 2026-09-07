@@ -5,7 +5,6 @@ import {
   mergeNotesWithHash,
   meltNote,
   fetchNoteInfo,
-  fetchNoteInfoWithSecret,
   fetchNoteInfoByHash,
   withNewK1,
   withoutK1,
@@ -240,14 +239,10 @@ export type DeviceRefreshResult = DeviceMutationResult & {
 
 export const deviceRefresh = async (
   client: DeviceClient,
-  bearer: {deviceId: string; url: string; amount: number},
-  options: {discloseSecret?: boolean} = {}
+  bearer: {deviceId: string; url: string; amount: number}
 ): Promise<DeviceRefreshResult> => {
   const k1 = await client.exportSecret(bearer.deviceId)
-  const lookup = options.discloseSecret
-    ? fetchNoteInfoWithSecret
-    : fetchNoteInfo
-  const info = await lookup(withNewK1(bearer.url, k1, bearer.amount))
+  const info = await fetchNoteInfo(withNewK1(bearer.url, k1, bearer.amount))
   const rotated = await rotateK1OnDevice(
     client,
     {url: bearer.url, callback: info.callback},

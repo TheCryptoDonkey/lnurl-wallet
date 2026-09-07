@@ -56,7 +56,6 @@ export type BearerCardProps = {
   // encapsulates the full device/rotate-on-refresh flow shared with the
   // selection toolbar's own Refresh action; not worth duplicating here
   onRefresh: (bearer: Bearer) => Promise<void>
-  onCheckStatus: (bearer: Bearer) => void
 }
 
 const BearerCard: Component<BearerCardProps> = props => {
@@ -300,9 +299,6 @@ const BearerCard: Component<BearerCardProps> = props => {
         <div class="bearer-status-unknown" role="status">
           <strong>Status unknown</strong>
           <p>Your copy and its last known value have been kept.</p>
-          <button onClick={() => props.onCheckStatus(props.bearer)}>
-            Check with secret
-          </button>
         </div>
       </Show>
       <Show when={isSpent()}>

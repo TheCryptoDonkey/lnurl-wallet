@@ -33,16 +33,6 @@ let requests: URL[]
 let mintState: 'live' | 'burned' | 'never-issued' | 'pending' | 'offline'
 let hashSupported: boolean
 
-const button = (
-  text: string,
-  root: ParentNode = document
-): HTMLButtonElement => {
-  const match = [...root.querySelectorAll('button')].find(
-    b => b.textContent?.trim() === text
-  )
-  if (!match) throw new Error(`Missing button: ${text}`)
-  return match
-}
 const mount = () => {
   const container = document.createElement('div')
   document.body.append(container)
@@ -57,23 +47,12 @@ const mount = () => {
   )
 }
 const refresh = async () => {
+  const previous = requests.length
   document
     .querySelector<HTMLButtonElement>('button[title^="Rotate -"]')!
     .click()
-  await vi.waitFor(() => expect(requests).toHaveLength(1))
+  await vi.waitFor(() => expect(requests.length).toBeGreaterThan(previous))
 }
-const openSecretCheck = () => {
-  button('Check with secret').click()
-  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-    'spending secret to'
-  )
-  expect(requests.every(url => !url.searchParams.has('k1'))).toBe(true)
-}
-const confirmSecretCheck = () =>
-  button(
-    'Check with secret',
-    document.querySelector('[role="dialog"]')!
-  ).click()
 
 beforeEach(async () => {
   localStorage.clear()
@@ -149,7 +128,7 @@ beforeEach(async () => {
           reason:
             mintState === 'pending'
               ? 'pending'
-              : mintState === 'burned' && url.searchParams.has('k1')
+              : mintState === 'burned'
                 ? 'Note already spent.'
                 : 'Unknown note.'
         }
@@ -168,83 +147,78 @@ afterEach(() => {
 
 describe('refreshing a note redeemed outside this wallet', () => {
   it.each([false, true])(
-    'preserves an inconclusive note and confirms spent only after disclosure (grouped: %s)',
+    'marks a spent hash as spent without exposing the secret (grouped: %s)',
     async grouped => {
       setNoteGroupByMint(grouped)
       await refresh()
-      await vi.waitFor(() =>
-        expect(
-          document.querySelector('[role="status"]')?.textContent
-        ).toContain('Status unknown')
-      )
+      await vi.waitFor(() => expect(notes()[0].spent).toBe(true))
+      expect(requests).toHaveLength(1)
       expect(requests[0].searchParams.get('h')).toBe(hashK1(K1))
       expect(requests[0].searchParams.has('k1')).toBe(false)
       expect(notes()[0]).toMatchObject({
         url: ORIGINAL_URL,
         amount: 3000,
-        statusUnknown: true
+        statusUnknown: false
       })
+      expect(await loadBearers(aesKey)).toEqual(notes())
+      expect(document.querySelector('[role="dialog"]')).toBeNull()
+      expect(document.querySelector('[role="status"]')).toBeNull()
+      expect(context.notify).toHaveBeenCalledWith(
+        'Already spent - marked spent in this wallet.',
+        expect.anything()
+      )
+    }
+  )
+
+  it.each(['never-issued', 'legacy hash lookup'] as const)(
+    'keeps %s inconclusive, without a secret-disclosing retry',
+    async variant => {
+      mintState = variant === 'never-issued' ? 'never-issued' : 'burned'
+      hashSupported = variant !== 'legacy hash lookup'
+      await refresh()
+      await vi.waitFor(() => expect(notes()[0].statusUnknown).toBe(true))
+      expect(notes()[0]).toMatchObject({url: ORIGINAL_URL, amount: 3000})
       expect(notes()[0].spent).not.toBe(true)
       expect(await loadBearers(aesKey)).toEqual(notes())
-      // The warning survives a remount, rather than disappearing with a toast.
+      expect(document.querySelector('[role="status"]')?.textContent).toContain(
+        'last known value'
+      )
+      expect(document.body.textContent).toContain(
+        'Includes 3 sats with unknown status'
+      )
+      expect(document.body.textContent).not.toContain('Check with secret')
+      expect(requests).toHaveLength(1)
+      expect(requests[0].searchParams.has('k1')).toBe(false)
       dispose!()
       document.body.replaceChildren()
       mount()
       expect(document.querySelector('[role="status"]')?.textContent).toContain(
-        'last known value'
+        'Status unknown'
       )
-      openSecretCheck()
-      button('Cancel', document.querySelector('[role="dialog"]')!).click()
-      expect(requests).toHaveLength(1)
-      openSecretCheck()
-      confirmSecretCheck()
-      await vi.waitFor(() => expect(notes()[0].spent).toBe(true))
-      expect(requests).toHaveLength(2)
-      expect(requests[1].searchParams.get('k1')).toBe(K1)
-      expect(requests[1].searchParams.has('h')).toBe(false)
-      expect(notes()[0]).toMatchObject({
-        url: ORIGINAL_URL,
-        amount: 3000,
-        statusUnknown: false
-      })
-      expect((await loadBearers(aesKey))[0].spent).toBe(true)
     }
   )
 
-  it('rotates a live note after an explicit check on a mint without hash lookup', async () => {
-    mintState = 'live'
+  it('clears the inconclusive status when a later refresh finds a live note', async () => {
     hashSupported = false
     await refresh()
     await vi.waitFor(() => expect(notes()[0].statusUnknown).toBe(true))
-    openSecretCheck()
-    confirmSecretCheck()
+    hashSupported = true
+    mintState = 'live'
+    await refresh()
     await vi.waitFor(() => expect(notes()[0].statusUnknown).toBe(false))
     expect(notes()[0].spent).not.toBe(true)
-    expect(notes()[0].amount).toBe(3000)
     expect(noteK1(notes()[0].url)).not.toBe(K1)
     expect(requests.map(url => url.pathname)).toEqual(['/w', '/w', '/w/cb'])
+    // Only the authorised rotate callback carries the secret.
+    expect(
+      requests
+        .filter(url => url.pathname === '/w')
+        .every(url => !url.searchParams.has('k1'))
+    ).toBe(true)
     expect(hashK1(noteK1(notes()[0].url)!)).toBe(
       requests[2].searchParams.get('h')
     )
     expect(await loadBearers(aesKey)).toEqual(notes())
-  })
-
-  it('retains a never-issued note even after checking with its secret', async () => {
-    mintState = 'never-issued'
-    await refresh()
-    await vi.waitFor(() => expect(notes()[0].statusUnknown).toBe(true))
-    openSecretCheck()
-    confirmSecretCheck()
-    await vi.waitFor(() =>
-      expect(document.querySelector('[role="dialog"]')).toBeNull()
-    )
-    expect(notes()[0].spent).not.toBe(true)
-    expect((await loadBearers(aesKey))[0]).toMatchObject({
-      url: ORIGINAL_URL,
-      amount: 3000,
-      statusUnknown: true
-    })
-    expect(requests).toHaveLength(2)
   })
 
   it.each(['pending', 'offline'] as const)(

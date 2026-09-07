@@ -6,7 +6,6 @@ import type {DeviceTransport} from './device'
 import {DeviceClient} from './device'
 import {
   deviceRotate,
-  deviceRefresh,
   migrateNoteToDevice,
   deviceMerge,
   deviceSplit,
@@ -357,41 +356,6 @@ const withMint = <T>(mint: MockMint, run: () => Promise<T>): Promise<T> => {
 }
 
 describe('deviceRotate / migrateNoteToDevice', () => {
-  it.each([false, true])(
-    'refresh only discloses the device secret at lookup when explicitly requested: %s',
-    async discloseSecret => {
-      const mint = new MockMint()
-      const firmware = new MockDeviceFirmware()
-      const client = new DeviceClient(firmware)
-      const k1 = randomHex(32)
-      mint.seed(k1, 3000)
-      const importedId = await client.importSecret(k1, HOST, 3000)
-      const requests: URL[] = []
-      await withMint(mint, async () => {
-        vi.stubGlobal('fetch', async (input: string | URL) => {
-          requests.push(new URL(input.toString()))
-          return mint.fetch(input)
-        })
-        const result = await deviceRefresh(
-          client,
-          {
-            deviceId: importedId,
-            url: WITHDRAW_URL,
-            amount: 3000
-          },
-          {discloseSecret}
-        )
-        expect(requests[0].searchParams.has('k1')).toBe(discloseSecret)
-        expect(requests[0].searchParams.has('h')).toBe(!discloseSecret)
-        expect(result.url).not.toContain('k1=')
-        expect(firmware.get(importedId)?.state).toBe('spent')
-        expect(
-          mint.isOutstanding(await client.exportSecret(result.deviceId))
-        ).toBe(true)
-      })
-    }
-  )
-
   it('rotates an already device-backed note', async () => {
     const mint = new MockMint()
     const firmware = new MockDeviceFirmware()

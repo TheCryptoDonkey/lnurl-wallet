@@ -778,25 +778,15 @@ export const fetchNoteInfo = async (
       )
     if (!missingK1) throw classifyNoteError(err as Error)
   }
-  return fetchNoteInfoWithSecret(url)
-}
-
-// Explicit disclosure, also used for the legacy "missing k1" fallback.
-// Callers must make the disclosure clear and rotate a still-live note.
-export const fetchNoteInfoWithSecret = async (
-  url: string
-): Promise<WithdrawRequestInfo> => {
-  const queried = requireNoteK1(url)
-  const rawUrl = new URL(url)
-  rawUrl.searchParams.delete('h')
-  rawUrl.searchParams.delete('sig')
   let body: any
   try {
     body = await lnurlFetch(rawUrl)
   } catch (fallbackError) {
     throw classifyNoteError(fallbackError as Error)
   }
-  // A raw response MUST echo the actual bearer secret, never a derived id.
+  // A raw compatibility response MUST echo the actual bearer secret, never a
+  // derived/opaque id.  The hash response omits it; restore the wallet's own
+  // already-known value only in the local return object for existing callers.
   if (typeof body.k1 !== 'string' || body.k1.toLowerCase() !== queried) {
     throw new Error(
       "Service echoed back a different k1 than queried - the note may have been redeemed elsewhere, or the service isn't spec-compliant."
@@ -962,15 +952,15 @@ export class NoteUnknownError extends Error {
   }
 }
 
-// A privacy-preserving lookup cannot distinguish spent from never issued,
-// or from a SERVICE that does not support hash lookups. Keep that evidence
-// separate from a refusal after presenting the actual bearer secret.
+// An unknown hash may be unregistered, or come from an older SERVICE that
+// hides spent hashes or does not support this lookup form. Only an explicit
+// spent reply establishes spending; retain secrets after an unknown reply.
 export class HashLookupUnknownError extends NoteUnknownError {
   constructor(reason: string) {
     super(reason)
     this.name = 'HashLookupUnknownError'
     this.message =
-      'Status unknown. This note may already be spent, or the mint may not recognise it or support private checks.'
+      'Status unknown. The mint may not recognise this note, or may not support checking its status by hash.'
   }
 }
 
