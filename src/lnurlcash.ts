@@ -720,7 +720,16 @@ const requestNoteInfoByHash = async (
   hashUrl.searchParams.delete('amount')
   hashUrl.searchParams.delete('sig')
   hashUrl.searchParams.set('h', h.toLowerCase())
-  const body = await lnurlFetch(hashUrl)
+  let body: any
+  try {
+    body = await lnurlFetch(hashUrl)
+  } catch (err) {
+    const classified = classifyNoteError(err as Error)
+    if (classified instanceof NoteUnknownError) {
+      throw new HashLookupUnknownError((err as ServiceError).reason)
+    }
+    throw classified
+  }
   if (body.k1 !== undefined) {
     throw new Error('SERVICE returned k1 in a hash-only lookup response.')
   }
@@ -769,15 +778,25 @@ export const fetchNoteInfo = async (
       )
     if (!missingK1) throw classifyNoteError(err as Error)
   }
+  return fetchNoteInfoWithSecret(url)
+}
+
+// Explicit disclosure, also used for the legacy "missing k1" fallback.
+// Callers must make the disclosure clear and rotate a still-live note.
+export const fetchNoteInfoWithSecret = async (
+  url: string
+): Promise<WithdrawRequestInfo> => {
+  const queried = requireNoteK1(url)
+  const rawUrl = new URL(url)
+  rawUrl.searchParams.delete('h')
+  rawUrl.searchParams.delete('sig')
   let body: any
   try {
     body = await lnurlFetch(rawUrl)
   } catch (fallbackError) {
     throw classifyNoteError(fallbackError as Error)
   }
-  // A raw compatibility response MUST echo the actual bearer secret, never a
-  // derived/opaque id.  The hash response omits it; restore the wallet's own
-  // already-known value only in the local return object for existing callers.
+  // A raw response MUST echo the actual bearer secret, never a derived id.
   if (typeof body.k1 !== 'string' || body.k1.toLowerCase() !== queried) {
     throw new Error(
       "Service echoed back a different k1 than queried - the note may have been redeemed elsewhere, or the service isn't spec-compliant."
@@ -793,9 +812,9 @@ export const fetchNoteInfo = async (
 // actually happen? Probes one of the input k1s with an informational GET:
 // 'live' (still outstanding - the request never landed, so the fresh
 // secrets the error carries minted nothing and can be dropped safely),
-// 'gone' (the service reports it spent/unknown - the burn landed and the
-// carried secrets are the only money left), or 'unknown' (the probe itself
-// failed - no information either way, keep everything)
+// 'gone' (an explicit spent verdict, or an unknown secret on the legacy
+// raw lookup), or 'unknown' (a hash-only refusal or failed probe - keep
+// everything until the operation's outcome can be established).
 export const probeBurnedNote = async (
   url: string
 ): Promise<'live' | 'gone' | 'unknown'> => {
@@ -803,6 +822,7 @@ export const probeBurnedNote = async (
     await fetchNoteInfo(url)
     return 'live'
   } catch (err) {
+    if (err instanceof HashLookupUnknownError) return 'unknown'
     if (err instanceof NoteSpentError || err instanceof NoteUnknownError) {
       return 'gone'
     }
@@ -931,16 +951,26 @@ export class NoteSpentError extends Error {
   }
 }
 
-// Thrown when SERVICE reports an unknown note.  For privacy, a hash lookup
-// uses this same response for burned and never-issued identifiers, so it is a
-// definitive "not outstanding" verdict but not proof the note never existed.
-// It remains distinct from a raw-k1 NoteSpentError for honest local wording.
+// A raw-secret unknown response is distinct from an explicit spent verdict.
+// Hash lookups use the subclass below because their refusal is inconclusive.
 export class NoteUnknownError extends Error {
   constructor(reason: string) {
     super(
       `The service doesn't recognize this note (service says: "${reason}").`
     )
     this.name = 'NoteUnknownError'
+  }
+}
+
+// A privacy-preserving lookup cannot distinguish spent from never issued,
+// or from a SERVICE that does not support hash lookups. Keep that evidence
+// separate from a refusal after presenting the actual bearer secret.
+export class HashLookupUnknownError extends NoteUnknownError {
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'HashLookupUnknownError'
+    this.message =
+      'Status unknown. This note may already be spent, or the mint may not recognise it or support private checks.'
   }
 }
 

@@ -28,6 +28,7 @@
     "solid-toast": "^0.5.0"
   },
   "devDependencies": {
+    "happy-dom": "20.11.6",
     "prettier": "^3.9.6",
     "sass": "^1.103.1",
     "solid-icons": "^1.2.0",

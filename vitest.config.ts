@@ -10,8 +10,8 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(gitVersion('dev'))
   },
   test: {
-    // the tested modules are pure crypto/codec helpers - node's own
-    // WebCrypto (crypto.subtle) covers everything they need, no jsdom
+    // Crypto/codec tests use Node's WebCrypto. UI regressions opt into
+    // happy-dom per file so the actual wallet handlers and cards are tested.
     environment: 'node',
     include: ['src/**/*.test.ts']
   }

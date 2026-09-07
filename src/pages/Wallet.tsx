@@ -42,12 +42,14 @@ import {
   requireNoteK1,
   withNewK1,
   fetchNoteInfo,
+  fetchNoteInfoWithSecret,
   rotateNote,
   mergeNotes,
   splitNote,
   settleNote,
   probeBurnedNote,
   NoteSpentError,
+  NoteUnknownError,
   AmbiguousMutationError
 } from '../lnurlcash'
 import {
@@ -95,6 +97,11 @@ const Wallet: Component = () => {
   const [unlocking, setUnlocking] = createSignal(false)
   const [selected, setSelected] = createSignal<Set<string>>(new Set())
   const [confirmClearSpent, setConfirmClearSpent] = createSignal(false)
+  const [confirmCheckStatus, setConfirmCheckStatus] = createSignal<
+    string | null
+  >(null)
+  const [checkingStatus, setCheckingStatus] = createSignal(false)
+  const refreshingNotes = new Set<string>()
   // collapsed by default, same reasoning MintGroupCard used to have per
   // mint - now a single wallet-wide toggle since notes no longer live in
   // separate per-mint sections
@@ -301,6 +308,11 @@ const Wallet: Component = () => {
   const spentCount = createMemo(() => spentBearers().length)
   const spendableTotal = createMemo(() =>
     spendableBearers().reduce((sum, b) => sum + b.amount, 0)
+  )
+  const unknownTotal = createMemo(() =>
+    spendableBearers()
+      .filter(b => b.statusUnknown)
+      .reduce((sum, b) => sum + b.amount, 0)
   )
   const spentTotal = createMemo(() =>
     spentBearers().reduce((sum, b) => sum + b.amount, 0)
@@ -532,7 +544,9 @@ const Wallet: Component = () => {
   // clicking Refresh on each individually. Sequential, not Promise.all:
   // persistBearer reads localStorage fresh after its own encrypt step, so
   // concurrent writes here could race and clobber each other's records
-  const refreshOneBearer = async (bearer: Bearer) => {
+  const refreshOneBearer = async (bearer: Bearer, discloseSecret = false) => {
+    if (refreshingNotes.has(bearer.id)) return
+    refreshingNotes.add(bearer.id)
     try {
       const client = deviceClient()
       const deviceId = bearer.deviceId
@@ -542,15 +556,20 @@ const Wallet: Component = () => {
         // the recovery action instead of falling through to fetchNoteInfo
         // and sending /w a request with neither k1 nor its device-held hash.
         const connectedClient = requireDeviceClient(client)
-        const result = await deviceRefresh(connectedClient, {
-          ...bearer,
-          deviceId
-        })
+        const result = await deviceRefresh(
+          connectedClient,
+          {
+            ...bearer,
+            deviceId
+          },
+          {discloseSecret}
+        )
         await updateBearer(bearer.id, {
           url: result.url,
           callback: result.callback,
           amount: result.amountMsat,
           verified: true,
+          statusUnknown: false,
           mintPubkey: result.mintPubkey ?? bearer.mintPubkey,
           deviceId: result.deviceId,
           deviceHash: result.deviceHash
@@ -564,7 +583,9 @@ const Wallet: Component = () => {
         return
       }
 
-      const info = await fetchNoteInfo(bearer.url)
+      const info = await (
+        discloseSecret ? fetchNoteInfoWithSecret : fetchNoteInfo
+      )(bearer.url)
 
       if (client) {
         const migrated = await migrateNoteToDevice(client, {
@@ -577,6 +598,7 @@ const Wallet: Component = () => {
           callback: migrated.callback,
           amount: info.maxWithdrawable,
           verified: true,
+          statusUnknown: false,
           mintPubkey: info.mintPubkey ?? bearer.mintPubkey,
           deviceId: migrated.deviceId,
           deviceHash: migrated.deviceHash
@@ -638,6 +660,7 @@ const Wallet: Component = () => {
         callback: info.callback,
         amount: info.maxWithdrawable,
         verified: true,
+        statusUnknown: false,
         mintPubkey: info.mintPubkey ?? bearer.mintPubkey
       })
       logActivity(
@@ -660,19 +683,48 @@ const Wallet: Component = () => {
         notify('Note refreshed.', NotifyKind.SUCCESS)
       }
     } catch (err) {
-      // the service just told us - unambiguously, this GET named exactly
-      // this note's own k1 - that it's already spent. Trust it and lock
-      // the note the same way markSpent() does, rather than leave it
-      // sitting there looking spendable until someone notices by hand.
+      // Only an explicit spent verdict locks the note. A hash lookup's
+      // unknown response cannot establish whether it was ever issued or
+      // spent, so keep the note and surface an actionable local status.
       if (err instanceof NoteSpentError) {
-        await updateBearer(bearer.id, {spent: true})
+        await updateBearer(bearer.id, {spent: true, statusUnknown: false})
         logActivity(
           'spent',
           `${serverOf(bearer.url)} reports ${msatToSats(bearer.amount)} sats as already spent - marked spent locally.`,
           bearer.label
         )
+        notify(
+          'Already spent - marked spent in this wallet.',
+          NotifyKind.SUCCESS
+        )
+        return
+      }
+      if (err instanceof NoteUnknownError) {
+        await updateBearer(bearer.id, {statusUnknown: true})
+        notify(
+          'Status unknown. Your note has been kept; check its status from the note card.'
+        )
+        return
       }
       notify((err as Error).message, NotifyKind.ERROR)
+    } finally {
+      refreshingNotes.delete(bearer.id)
+    }
+  }
+
+  const checkStatusWithSecret = async () => {
+    if (checkingStatus()) return
+    const bearer = bearers().find(b => b.id === confirmCheckStatus())
+    if (!bearer || bearer.spent || !bearer.statusUnknown) {
+      setConfirmCheckStatus(null)
+      return
+    }
+    setCheckingStatus(true)
+    try {
+      await refreshOneBearer(bearer, true)
+    } finally {
+      setCheckingStatus(false)
+      setConfirmCheckStatus(null)
     }
   }
 
@@ -1580,6 +1632,12 @@ const Wallet: Component = () => {
                     <FiatValue msat={spendableTotal()} />
                   </span>
                   <span class="wallet-stat-label">Total balance</span>
+                  <Show when={unknownTotal() > 0}>
+                    <span class="wallet-stat-label">
+                      Includes {msatToSats(unknownTotal())} sats with unknown
+                      status
+                    </span>
+                  </Show>
                 </div>
                 <div class="wallet-stat">
                   <span class="wallet-stat-value">
@@ -2223,6 +2281,9 @@ const Wallet: Component = () => {
                           toggleSelect(bearer.id, isSelected)
                         }
                         onRefresh={refreshOneBearer}
+                        onCheckStatus={bearer =>
+                          setConfirmCheckStatus(bearer.id)
+                        }
                       />
                     )}
                   </For>
@@ -2243,6 +2304,9 @@ const Wallet: Component = () => {
                               toggleSelect(bearer.id, isSelected)
                             }
                             onRefresh={refreshOneBearer}
+                            onCheckStatus={bearer =>
+                              setConfirmCheckStatus(bearer.id)
+                            }
                           />
                         )}
                       </For>
@@ -2253,6 +2317,40 @@ const Wallet: Component = () => {
             </Show>
           </div>
         </Show>
+      </Show>
+      <Show when={confirmCheckStatus()}>
+        <Dialog
+          onClose={() => !checkingStatus() && setConfirmCheckStatus(null)}
+        >
+          <h4>Check with the note's secret?</h4>
+          <p>
+            This sends the note's spending secret to{' '}
+            {serverOf(
+              bearers().find(b => b.id === confirmCheckStatus())?.url ?? ''
+            )}
+            . The mint can then report whether it knows the note or has already
+            spent it. If it is still live, the wallet will rotate it into a
+            fresh note.
+          </p>
+          <Show
+            when={bearers().find(b => b.id === confirmCheckStatus())?.deviceId}
+          >
+            <p>
+              Connect your vault and approve the secret export on the device.
+            </p>
+          </Show>
+          <div class="btns">
+            <button disabled={checkingStatus()} onClick={checkStatusWithSecret}>
+              {checkingStatus() ? 'Checking…' : 'Check with secret'}
+            </button>
+            <button
+              disabled={checkingStatus()}
+              onClick={() => setConfirmCheckStatus(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </Dialog>
       </Show>
       <Show when={transferSource()}>
         {bearer => (

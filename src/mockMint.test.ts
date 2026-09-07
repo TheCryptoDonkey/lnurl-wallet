@@ -683,7 +683,7 @@ describe('a rejection carrying no reason says nothing about the note', () => {
 
     respondWith({status: 'ERROR', reason: 'Unknown note.'})
     await expect(fetchNoteInfo(url)).rejects.toBeInstanceOf(NoteUnknownError)
-    expect(await probeBurnedNote(url)).toBe('gone')
+    expect(await probeBurnedNote(url)).toBe('unknown')
   })
 
   it('still maps the verbatim "pending" reason to PendingNoteError', async () => {
@@ -837,9 +837,10 @@ describe('ambiguous mutation failures', () => {
     expect(mint.isOutstanding(k1)).toBe(false)
     expect(mint.isOutstanding(newK1)).toBe(true)
 
-    // the recovery probe reads exactly that back
+    // The old hash's refusal cannot prove a burn; the positive output
+    // lookup can establish that the replacement exists.
     expect(await probeBurnedNote(buildNoteUrl(WITHDRAW_URL, k1, 8000))).toBe(
-      'gone'
+      'unknown'
     )
     expect(await probeBurnedNote(buildNoteUrl(WITHDRAW_URL, newK1, 8000))).toBe(
       'live'

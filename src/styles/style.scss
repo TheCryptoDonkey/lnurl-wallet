@@ -1440,6 +1440,20 @@ nav {
   overflow-wrap: anywhere;
 }
 
+.bearer-status-unknown {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border: 1px solid #e4c567;
+  border-radius: 6px;
+  font-size: 0.85em;
+  strong {
+    color: #e4c567;
+  }
+  p {
+    margin: 0.5rem 0;
+  }
+}
+
 // the holder's own free-text note (see BearerCard's editingLabel) - styled
 // as a caption under the amount, distinct from the protocol-derived badges
 // around it (unverified/signed/spent) so it reads as "yours", not status

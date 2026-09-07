@@ -24,6 +24,8 @@ import {
   serviceOriginOf,
   noteEndpointOf,
   fetchNoteInfo,
+  fetchNoteInfoWithSecret,
+  HashLookupUnknownError,
   rotateNoteWithHash,
   splitNoteWithHash,
   verifyNoteSignature,
@@ -174,8 +176,34 @@ describe('mandatory offline-verification fields', () => {
         }) as Response
     )
     vi.stubGlobal('fetch', fetchMock)
-    await expect(fetchNoteInfo(NOTE_URL)).rejects.toThrow(/unknown/i)
+    await expect(fetchNoteInfo(NOTE_URL)).rejects.toBeInstanceOf(
+      HashLookupUnknownError
+    )
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires the explicit secret lookup to echo the same note', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        const request = new URL(input.toString())
+        expect(request.searchParams.get('k1')).toBe(K1)
+        expect(request.searchParams.has('h')).toBe(false)
+        expect(request.searchParams.has('sig')).toBe(false)
+        return {
+          json: async () => ({
+            tag: 'withdrawRequest',
+            callback: 'https://mint.example.com/w/cb',
+            maxWithdrawable: 21000,
+            mintPubkey: MINT_KEY,
+            k1: 'b'.repeat(64)
+          })
+        } as Response
+      })
+    )
+    await expect(
+      fetchNoteInfoWithSecret(`${NOTE_URL}&h=${hashK1(K1)}&sig=unused`)
+    ).rejects.toThrow('different k1')
   })
 
   it('rejects a note lookup without a persistent SERVICE key', async () => {
