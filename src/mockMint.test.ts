@@ -266,7 +266,11 @@ class MockMint {
       const note = this.notes.get(hash)
       if (!note) {
         return this.error(
-          this.spent.has(hash) ? 'Note already spent.' : 'Unknown note.'
+          requestedHash
+            ? 'Unknown note.'
+            : this.spent.has(hash)
+              ? 'Note already spent.'
+              : 'Unknown note.'
         )
       }
       return this.respond({
@@ -437,8 +441,11 @@ describe('mint -> rotate -> split -> merge -> melt', () => {
     expect(rotated.k1).not.toBe(preimage)
     expect(mint.isOutstanding(preimage)).toBe(false)
     expect(mint.isOutstanding(rotated.k1)).toBe(true)
-    // The mint retains the spent hash and reports its state.
-    await expect(fetchNoteInfo(noteUrl)).rejects.toBeInstanceOf(NoteSpentError)
+    // Hash lookup deliberately does not reveal whether this identifier was
+    // burned or never existed.
+    await expect(fetchNoteInfo(noteUrl)).rejects.toBeInstanceOf(
+      NoteUnknownError
+    )
 
     // split: one k1, one piece + change (LUD-25 also allows many at once,
     // covered by the "one or many k1s" test below)
@@ -480,7 +487,7 @@ describe('mint -> rotate -> split -> merge -> melt', () => {
     expect(mint.isOutstanding(merged.k1)).toBe(false)
     await expect(
       fetchNoteInfo(buildNoteUrl(WITHDRAW_URL, merged.k1, 21000))
-    ).rejects.toBeInstanceOf(NoteSpentError)
+    ).rejects.toThrow(/unknown/i)
   })
 
   it('splits one or many k1s in a single request (LUD-25)', async () => {
@@ -569,7 +576,7 @@ describe('pending-note recovery', () => {
     mint.settleMelt(idFromVerifyUrl(melt.verify!))
     await expect(
       fetchNoteInfo(buildNoteUrl(WITHDRAW_URL, k1, 10000))
-    ).rejects.toBeInstanceOf(NoteSpentError)
+    ).rejects.toThrow(/unknown/i)
   })
 
   it('restores the note to outstanding if the outgoing payment fails', async () => {
@@ -597,13 +604,13 @@ describe('spent vs. unknown note classification', () => {
     ).rejects.toThrow(/unknown/i)
   })
 
-  it('classifies a retained burned hash as spent', async () => {
+  it('does not distinguish a burned hash from an unknown one', async () => {
     const k1 = randomHex(32)
     mint.seed(k1, 1000)
     await rotateNote(WITHDRAW_CALLBACK, k1)
     await expect(
       fetchNoteInfo(buildNoteUrl(WITHDRAW_URL, k1, 1000))
-    ).rejects.toBeInstanceOf(NoteSpentError)
+    ).rejects.toBeInstanceOf(NoteUnknownError)
   })
 
   it('a mutating callback naming an unknown k1 is also classified, even from its generic wording', async () => {
@@ -676,7 +683,7 @@ describe('a rejection carrying no reason says nothing about the note', () => {
 
     respondWith({status: 'ERROR', reason: 'Unknown note.'})
     await expect(fetchNoteInfo(url)).rejects.toBeInstanceOf(NoteUnknownError)
-    expect(await probeBurnedNote(url)).toBe('unknown')
+    expect(await probeBurnedNote(url)).toBe('gone')
   })
 
   it('still maps the verbatim "pending" reason to PendingNoteError', async () => {
@@ -703,7 +710,7 @@ describe('receiveNote surfaces a definitive spent/unknown report', () => {
 
     const url = buildNoteUrl(WITHDRAW_URL, k1, 1000)
     await expect(receiveNote(toBech32Lnurl(url), [])).rejects.toBeInstanceOf(
-      NoteSpentError
+      NoteUnknownError
     )
   })
 
@@ -830,8 +837,7 @@ describe('ambiguous mutation failures', () => {
     expect(mint.isOutstanding(k1)).toBe(false)
     expect(mint.isOutstanding(newK1)).toBe(true)
 
-    // The explicit spent reply confirms the input was burned; the output
-    // lookup establishes that the replacement exists.
+    // the recovery probe reads exactly that back
     expect(await probeBurnedNote(buildNoteUrl(WITHDRAW_URL, k1, 8000))).toBe(
       'gone'
     )

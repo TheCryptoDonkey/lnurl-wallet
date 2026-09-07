@@ -40,9 +40,6 @@ export type Bearer = {
   // reused by accident - it says nothing about whether the service has
   // actually burned it yet
   spent?: boolean
-  // An inconclusive lookup, not a spend verdict. Keep the secret and last
-  // known amount so the holder can retry or explicitly check with k1.
-  statusUnknown?: boolean
   // a free-text note the holder can attach for their own reference (e.g.
   // "rent", "gift for Alex") - purely local, never sent anywhere, no
   // protocol meaning at all

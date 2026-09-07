@@ -5,33 +5,83 @@ import {render} from 'solid-js/web'
 import {MemoryRouter, Route} from '@solidjs/router'
 import type {Bearer} from './storage'
 import {loadBearers, persistBearer} from './storage'
-import {hashK1, noteK1} from './lnurlcash'
+import {DeviceClient, type DeviceTransport} from './device'
+import {clearPendingDeviceOps, readPendingDeviceOps} from './deviceQueue'
+import {hashK1} from './lnurlcash'
 import {setNoteGroupByMint} from './notePrefs'
 import Wallet from './pages/Wallet'
 
-// Render the real Wallet and BearerCard, with real lookup/error handling
-// and encrypted persistence. Only the contexts and mint HTTP responses are
-// supplied here: the regression was between the lookup and the UI handler.
-const context = vi.hoisted(() => ({wallet: null as any, notify: vi.fn()}))
+// Exercise the rendered refresh handler, protocol client, encrypted bearer
+// storage and durable device queue together. Only the contexts, mint HTTP
+// response and physical device transport are supplied by this fixture.
+const context = vi.hoisted(() => ({
+  wallet: null as any,
+  device: null as any,
+  notify: vi.fn()
+}))
 vi.mock('./WalletContext', async importOriginal => ({
   ...(await importOriginal<typeof import('./WalletContext')>()),
   useWallet: () => context.wallet
 }))
-vi.mock('./DeviceContext', () => ({useDevice: () => ({client: () => null})}))
+vi.mock('./DeviceContext', () => ({
+  useDevice: () => ({client: () => context.device})
+}))
 vi.mock('./helpers', async importOriginal => ({
   ...(await importOriginal<typeof import('./helpers')>()),
   notify: context.notify
 }))
 
 const K1 = '12'.repeat(32)
-const ORIGINAL_URL = `https://mint.example/w?k1=${K1}&amount=3000`
-const MINT_KEY = `02${'11'.repeat(32)}`
+const DEVICE_ID = '00000001'
+const MIRROR_URL = 'https://mint.example/w?amount=3000'
+
+// The note was exported and redeemed in another wallet. The offline vault
+// still holds its confirmed copy until the companion sends mark_spent.
+// Marking it requires a separate simulated physical approval; exporting
+// for the existing refresh flow is approved by this fixture.
+class VaultTransport implements DeviceTransport {
+  readonly kind = 'serial' as const
+  state: 'confirmed' | 'spent' = 'confirmed'
+  commands: {cmd: string; id?: string}[] = []
+  private messageHandler: (message: unknown) => void = () => {}
+  private disconnectHandler: () => void = () => {}
+
+  onMessage(handler: (message: unknown) => void): void {
+    this.messageHandler = handler
+  }
+  onDisconnect(handler: () => void): void {
+    this.disconnectHandler = handler
+  }
+  async disconnect(): Promise<void> {
+    this.disconnectHandler()
+    context.device = null
+  }
+  async send(message: unknown): Promise<void> {
+    const command = message as {cmd: string; id?: string}
+    this.commands.push(command)
+    if (command.id !== DEVICE_ID) throw new Error('wrong device note')
+    if (command.cmd === 'export_secret') {
+      queueMicrotask(() => this.messageHandler({ok: true, k1: K1}))
+    } else if (command.cmd !== 'mark_spent') {
+      throw new Error(`unexpected command: ${command.cmd}`)
+    }
+  }
+  approveMark(): void {
+    this.state = 'spent'
+    this.messageHandler({ok: true})
+  }
+  declineMark(): void {
+    this.messageHandler({ok: false, error: 'denied'})
+  }
+}
+
 let dispose: (() => void) | undefined
 let notes: () => Bearer[]
 let aesKey: CryptoKey
+let vault: VaultTransport
 let requests: URL[]
-let mintState: 'live' | 'burned' | 'never-issued' | 'pending' | 'offline'
-let hashSupported: boolean
+let response: 'spent' | 'unknown' | 'pending' | 'offline'
+let disconnectDuringLookup: boolean
 
 const mount = () => {
   const container = document.createElement('div')
@@ -46,28 +96,43 @@ const mount = () => {
     container
   )
 }
-const refresh = async () => {
-  const previous = requests.length
+const refresh = () =>
   document
     .querySelector<HTMLButtonElement>('button[title^="Rotate -"]')!
     .click()
-  await vi.waitFor(() => expect(requests.length).toBeGreaterThan(previous))
+const waitForMark = async (count = 1) => {
+  await vi.waitFor(() =>
+    expect(vault.commands.filter(c => c.cmd === 'mark_spent')).toHaveLength(
+      count
+    )
+  )
+}
+const assertHashOnly = () => {
+  expect(requests).toHaveLength(1)
+  expect(requests[0].pathname).toBe('/w')
+  expect(requests[0].searchParams.get('h')).toBe(hashK1(K1))
+  expect(requests[0].searchParams.has('k1')).toBe(false)
 }
 
 beforeEach(async () => {
   localStorage.clear()
+  clearPendingDeviceOps()
   context.notify.mockClear()
   setNoteGroupByMint(false)
-  mintState = 'burned'
-  hashSupported = true
+  vault = new VaultTransport()
+  context.device = new DeviceClient(vault)
   requests = []
+  response = 'spent'
+  disconnectDuringLookup = false
   const [read, write] = createSignal<Bearer[]>([
     {
       id: 'note-1',
-      url: ORIGINAL_URL,
+      url: MIRROR_URL,
       callback: 'https://mint.example/w/cb',
       amount: 3000,
       verified: true,
+      deviceId: DEVICE_ID,
+      deviceHash: hashK1(K1),
       createdAt: 1,
       updatedAt: 1
     }
@@ -99,139 +164,115 @@ beforeEach(async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL) => {
-      const url = new URL(input.toString())
-      requests.push(url)
-      if (mintState === 'offline') throw new TypeError('offline')
-      let body: object
-      if (url.pathname === '/w/cb') {
-        expect(mintState).toBe('live')
-        expect(url.searchParams.get('k1')).toBe(K1)
-        expect(url.searchParams.get('h')).toMatch(/^[a-f0-9]{64}$/)
-        mintState = 'burned'
-        body = {status: 'OK', sig: '00'.repeat(65)}
-      } else if (url.searchParams.has('h') && !hashSupported) {
-        body = {status: 'ERROR', reason: 'Unknown note.'}
-      } else if (mintState === 'live') {
-        body = {
-          tag: 'withdrawRequest',
-          callback: 'https://mint.example/w/cb',
-          maxWithdrawable: 3000,
-          minWithdrawable: 3000,
-          mintPubkey: MINT_KEY,
-          ...(url.searchParams.has('k1')
-            ? {k1: url.searchParams.get('k1')}
-            : {})
-        }
-      } else {
-        body = {
+      requests.push(new URL(input.toString()))
+      if (disconnectDuringLookup) await vault.disconnect()
+      if (response === 'offline') throw new TypeError('offline')
+      return {
+        json: async () => ({
           status: 'ERROR',
           reason:
-            mintState === 'pending'
-              ? 'pending'
-              : mintState === 'burned'
-                ? 'Note already spent.'
+            response === 'spent'
+              ? 'Note already spent.'
+              : response === 'pending'
+                ? 'pending'
                 : 'Unknown note.'
-        }
-      }
-      return {json: async () => body} as Response
+        })
+      } as Response
     })
   )
   mount()
 })
 
-afterEach(() => {
+afterEach(async () => {
   dispose?.()
+  await vault.disconnect()
   document.body.replaceChildren()
+  clearPendingDeviceOps()
   vi.unstubAllGlobals()
 })
 
-describe('refreshing a note redeemed outside this wallet', () => {
+describe('refreshing a vault note redeemed elsewhere', () => {
   it.each([false, true])(
-    'marks a spent hash as spent without exposing the secret (grouped: %s)',
+    'retires the device copy after approval (grouped: %s)',
     async grouped => {
       setNoteGroupByMint(grouped)
-      await refresh()
-      await vi.waitFor(() => expect(notes()[0].spent).toBe(true))
-      expect(requests).toHaveLength(1)
-      expect(requests[0].searchParams.get('h')).toBe(hashK1(K1))
-      expect(requests[0].searchParams.has('k1')).toBe(false)
+      refresh()
+      await waitForMark()
+      assertHashOnly()
       expect(notes()[0]).toMatchObject({
-        url: ORIGINAL_URL,
-        amount: 3000,
-        statusUnknown: false
+        spent: true,
+        url: MIRROR_URL,
+        amount: 3000
       })
       expect(await loadBearers(aesKey)).toEqual(notes())
-      expect(document.querySelector('[role="dialog"]')).toBeNull()
-      expect(document.querySelector('[role="status"]')).toBeNull()
-      expect(context.notify).toHaveBeenCalledWith(
-        'Already spent - marked spent in this wallet.',
-        expect.anything()
-      )
+      expect(vault.state).toBe('confirmed')
+      expect(readPendingDeviceOps()).toMatchObject([
+        {outputs: [], burnDeviceIds: [DEVICE_ID]}
+      ])
+      vault.approveMark()
+      await vi.waitFor(() => expect(readPendingDeviceOps()).toEqual([]))
+      expect(vault.state).toBe('spent')
+      expect(vault.commands.map(c => c.cmd)).toEqual([
+        'export_secret',
+        'mark_spent'
+      ])
     }
   )
 
-  it.each(['never-issued', 'legacy hash lookup'] as const)(
-    'keeps %s inconclusive, without a secret-disclosing retry',
-    async variant => {
-      mintState = variant === 'never-issued' ? 'never-issued' : 'burned'
-      hashSupported = variant !== 'legacy hash lookup'
-      await refresh()
-      await vi.waitFor(() => expect(notes()[0].statusUnknown).toBe(true))
-      expect(notes()[0]).toMatchObject({url: ORIGINAL_URL, amount: 3000})
-      expect(notes()[0].spent).not.toBe(true)
-      expect(await loadBearers(aesKey)).toEqual(notes())
-      expect(document.querySelector('[role="status"]')?.textContent).toContain(
-        'last known value'
-      )
-      expect(document.body.textContent).toContain(
-        'Includes 3 sats with unknown status'
-      )
-      expect(document.body.textContent).not.toContain('Check with secret')
-      expect(requests).toHaveLength(1)
-      expect(requests[0].searchParams.has('k1')).toBe(false)
-      dispose!()
-      document.body.replaceChildren()
-      mount()
-      expect(document.querySelector('[role="status"]')?.textContent).toContain(
-        'Status unknown'
-      )
-    }
-  )
-
-  it('clears the inconclusive status when a later refresh finds a live note', async () => {
-    hashSupported = false
-    await refresh()
-    await vi.waitFor(() => expect(notes()[0].statusUnknown).toBe(true))
-    hashSupported = true
-    mintState = 'live'
-    await refresh()
-    await vi.waitFor(() => expect(notes()[0].statusUnknown).toBe(false))
-    expect(notes()[0].spent).not.toBe(true)
-    expect(noteK1(notes()[0].url)).not.toBe(K1)
-    expect(requests.map(url => url.pathname)).toEqual(['/w', '/w', '/w/cb'])
-    // Only the authorised rotate callback carries the secret.
-    expect(
-      requests
-        .filter(url => url.pathname === '/w')
-        .every(url => !url.searchParams.has('k1'))
-    ).toBe(true)
-    expect(hashK1(noteK1(notes()[0].url)!)).toBe(
-      requests[2].searchParams.get('h')
-    )
-    expect(await loadBearers(aesKey)).toEqual(notes())
-  })
-
-  it.each(['pending', 'offline'] as const)(
-    'does not turn %s into a spent or unknown-note verdict',
-    async state => {
-      mintState = state
-      await refresh()
+  it.each(['during lookup', 'during approval', 'declined approval'] as const)(
+    'retains the queued update across reload and reconnect after %s',
+    async interruption => {
+      disconnectDuringLookup = interruption === 'during lookup'
+      refresh()
+      if (disconnectDuringLookup) {
+        await vi.waitFor(() => expect(readPendingDeviceOps()).toHaveLength(1))
+      } else {
+        await waitForMark()
+        if (interruption === 'during approval') await vault.disconnect()
+        else vault.declineMark()
+      }
       await vi.waitFor(() => expect(context.notify).toHaveBeenCalled())
-      expect(notes()[0]).toMatchObject({url: ORIGINAL_URL, amount: 3000})
+      assertHashOnly()
+      expect(vault.state).toBe('confirmed')
+      expect((await loadBearers(aesKey))[0].spent).toBe(true)
+      const queued = readPendingDeviceOps()
+      expect(queued).toMatchObject([{outputs: [], burnDeviceIds: [DEVICE_ID]}])
+      expect(JSON.stringify(queued)).not.toContain(K1)
+
+      // Reload the queue module to prove recovery reads persisted data, not
+      // an old in-memory queue. DeviceContext calls this same drain on connect.
+      dispose!()
+      dispose = undefined
+      await vault.disconnect()
+      vi.resetModules()
+      const recoveredQueue = await import('./deviceQueue')
+      expect(recoveredQueue.readPendingDeviceOps()).toEqual(queued)
+      const marksBeforeReconnect = vault.commands.filter(
+        c => c.cmd === 'mark_spent'
+      ).length
+      const reconnected = new DeviceClient(vault)
+      const drain = recoveredQueue.drainPendingDeviceOps(reconnected)
+      await waitForMark(marksBeforeReconnect + 1)
+      expect(vault.state).toBe('confirmed')
+      vault.approveMark()
+      await drain
+      expect(recoveredQueue.readPendingDeviceOps()).toEqual([])
+      expect(vault.state).toBe('spent')
+    }
+  )
+
+  it.each(['unknown', 'pending', 'offline'] as const)(
+    'does not retire either copy on %s',
+    async outcome => {
+      response = outcome
+      refresh()
+      await vi.waitFor(() => expect(context.notify).toHaveBeenCalled())
+      assertHashOnly()
       expect(notes()[0].spent).not.toBe(true)
-      expect(notes()[0].statusUnknown).not.toBe(true)
-      expect(requests.every(url => !url.searchParams.has('k1'))).toBe(true)
-      expect(await loadBearers(aesKey)).toEqual(notes())
+      expect((await loadBearers(aesKey))[0].spent).not.toBe(true)
+      expect(vault.state).toBe('confirmed')
+      expect(readPendingDeviceOps()).toEqual([])
+      expect(vault.commands.map(c => c.cmd)).toEqual(['export_secret'])
     }
   )
 })

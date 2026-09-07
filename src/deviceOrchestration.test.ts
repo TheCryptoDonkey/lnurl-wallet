@@ -552,7 +552,7 @@ describe('adoptDeviceNote', () => {
 })
 
 describe('ambiguous mint-call failures', () => {
-  it('an inconclusive burn lookup retains the staged rotate secret and its parent', async () => {
+  it('a dropped rotate response commits the staged secret rather than discarding it', async () => {
     const mint = new MockMint()
     const firmware = new MockDeviceFirmware()
     const client = new DeviceClient(firmware)
@@ -562,25 +562,25 @@ describe('ambiguous mint-call failures', () => {
     await withMint(mint, async () => {
       const importedId = await client.importSecret(k1, HOST, 21000)
       mint.dropNextCallback = true
-      await expect(
-        deviceRotate(client, {
-          deviceId: importedId,
-          url: noteTemplateUrl(k1, 21000),
-          callback: WITHDRAW_CALLBACK,
-          amount: 21000
-        })
-      ).rejects.toThrow('staged secret was kept')
-      const pending = (await client.listAllNotes()).filter(
-        n => n.state === 'pending'
-      )
-      expect(pending).toHaveLength(1)
-      expect(firmware.get(importedId)?.state).toBe('confirmed')
-      expect(mint.isOutstanding(firmware.get(pending[0].id)!.secret)).toBe(true)
+      const result = await deviceRotate(client, {
+        deviceId: importedId,
+        url: noteTemplateUrl(k1, 21000),
+        callback: WITHDRAW_CALLBACK,
+        amount: 21000
+      })
+      // the probe shows the old k1 gone, so the rotate landed mint-side
+      // despite the lost response - the staged secret is the only copy of
+      // the money and must be committed, never discarded
+      expect(firmware.get(result.deviceId)?.state).toBe('confirmed')
+      expect(firmware.get(importedId)?.state).toBe('spent')
+      const newK1 = await client.exportSecret(result.deviceId)
+      expect(mint.isOutstanding(newK1)).toBe(true)
       expect(mint.isOutstanding(k1)).toBe(false)
+      expect(result.signature).toBeUndefined()
     })
   })
 
-  it('an inconclusive burn lookup retains both staged split outputs and their parent', async () => {
+  it('a dropped split response commits both staged outputs', async () => {
     const mint = new MockMint()
     const firmware = new MockDeviceFirmware()
     const client = new DeviceClient(firmware)
@@ -590,23 +590,20 @@ describe('ambiguous mint-call failures', () => {
     await withMint(mint, async () => {
       const importedId = await client.importSecret(k1, HOST, 21000)
       mint.dropNextCallback = true
-      await expect(
-        deviceSplit(
-          client,
-          [{deviceId: importedId, url: noteTemplateUrl(k1, 21000)}],
-          WITHDRAW_CALLBACK,
-          6000,
-          21000
-        )
-      ).rejects.toThrow('staged secret was kept')
-      const pending = (await client.listAllNotes()).filter(
-        n => n.state === 'pending'
+      const parts = await deviceSplit(
+        client,
+        [{deviceId: importedId, url: noteTemplateUrl(k1, 21000)}],
+        WITHDRAW_CALLBACK,
+        6000,
+        21000
       )
-      expect(pending).toHaveLength(2)
-      expect(firmware.get(importedId)?.state).toBe('confirmed')
-      for (const note of pending) {
-        expect(mint.isOutstanding(firmware.get(note.id)!.secret)).toBe(true)
-      }
+      expect(firmware.get(importedId)?.state).toBe('spent')
+      expect(firmware.get(parts.target.deviceId)?.state).toBe('confirmed')
+      expect(firmware.get(parts.change.deviceId)?.state).toBe('confirmed')
+      const targetK1 = await client.exportSecret(parts.target.deviceId)
+      const changeK1 = await client.exportSecret(parts.change.deviceId)
+      expect(mint.isOutstanding(targetK1)).toBe(true)
+      expect(mint.isOutstanding(changeK1)).toBe(true)
     })
   })
 

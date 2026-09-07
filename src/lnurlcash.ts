@@ -720,16 +720,7 @@ const requestNoteInfoByHash = async (
   hashUrl.searchParams.delete('amount')
   hashUrl.searchParams.delete('sig')
   hashUrl.searchParams.set('h', h.toLowerCase())
-  let body: any
-  try {
-    body = await lnurlFetch(hashUrl)
-  } catch (err) {
-    const classified = classifyNoteError(err as Error)
-    if (classified instanceof NoteUnknownError) {
-      throw new HashLookupUnknownError((err as ServiceError).reason)
-    }
-    throw classified
-  }
+  const body = await lnurlFetch(hashUrl)
   if (body.k1 !== undefined) {
     throw new Error('SERVICE returned k1 in a hash-only lookup response.')
   }
@@ -802,9 +793,9 @@ export const fetchNoteInfo = async (
 // actually happen? Probes one of the input k1s with an informational GET:
 // 'live' (still outstanding - the request never landed, so the fresh
 // secrets the error carries minted nothing and can be dropped safely),
-// 'gone' (an explicit spent verdict, or an unknown secret on the legacy
-// raw lookup), or 'unknown' (a hash-only refusal or failed probe - keep
-// everything until the operation's outcome can be established).
+// 'gone' (the service reports it spent/unknown - the burn landed and the
+// carried secrets are the only money left), or 'unknown' (the probe itself
+// failed - no information either way, keep everything)
 export const probeBurnedNote = async (
   url: string
 ): Promise<'live' | 'gone' | 'unknown'> => {
@@ -812,7 +803,6 @@ export const probeBurnedNote = async (
     await fetchNoteInfo(url)
     return 'live'
   } catch (err) {
-    if (err instanceof HashLookupUnknownError) return 'unknown'
     if (err instanceof NoteSpentError || err instanceof NoteUnknownError) {
       return 'gone'
     }
@@ -941,26 +931,16 @@ export class NoteSpentError extends Error {
   }
 }
 
-// A raw-secret unknown response is distinct from an explicit spent verdict.
-// Hash lookups use the subclass below because their refusal is inconclusive.
+// Thrown when SERVICE reports an unknown note.  For privacy, a hash lookup
+// uses this same response for burned and never-issued identifiers, so it is a
+// definitive "not outstanding" verdict but not proof the note never existed.
+// It remains distinct from a raw-k1 NoteSpentError for honest local wording.
 export class NoteUnknownError extends Error {
   constructor(reason: string) {
     super(
       `The service doesn't recognize this note (service says: "${reason}").`
     )
     this.name = 'NoteUnknownError'
-  }
-}
-
-// An unknown hash may be unregistered, or come from an older SERVICE that
-// hides spent hashes or does not support this lookup form. Only an explicit
-// spent reply establishes spending; retain secrets after an unknown reply.
-export class HashLookupUnknownError extends NoteUnknownError {
-  constructor(reason: string) {
-    super(reason)
-    this.name = 'HashLookupUnknownError'
-    this.message =
-      'Status unknown. The mint may not recognise this note, or may not support checking its status by hash.'
   }
 }
 

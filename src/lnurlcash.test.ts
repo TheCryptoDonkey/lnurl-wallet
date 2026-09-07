@@ -24,7 +24,6 @@ import {
   serviceOriginOf,
   noteEndpointOf,
   fetchNoteInfo,
-  HashLookupUnknownError,
   rotateNoteWithHash,
   splitNoteWithHash,
   verifyNoteSignature,
@@ -175,9 +174,7 @@ describe('mandatory offline-verification fields', () => {
         }) as Response
     )
     vi.stubGlobal('fetch', fetchMock)
-    await expect(fetchNoteInfo(NOTE_URL)).rejects.toBeInstanceOf(
-      HashLookupUnknownError
-    )
+    await expect(fetchNoteInfo(NOTE_URL)).rejects.toThrow(/unknown/i)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 

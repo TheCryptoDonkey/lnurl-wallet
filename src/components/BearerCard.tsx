@@ -295,12 +295,6 @@ const BearerCard: Component<BearerCardProps> = props => {
           <span class="bearer-server">{serverOf(props.bearer.url)}</span>
         </div>
       </div>
-      <Show when={props.bearer.statusUnknown && !isSpent()}>
-        <div class="bearer-status-unknown" role="status">
-          <strong>Status unknown</strong>
-          <p>Your copy and its last known value have been kept.</p>
-        </div>
-      </Show>
       <Show when={isSpent()}>
         <div class="btns">
           <div class="bearer-actions">

@@ -48,7 +48,6 @@ import {
   settleNote,
   probeBurnedNote,
   NoteSpentError,
-  NoteUnknownError,
   AmbiguousMutationError
 } from '../lnurlcash'
 import {
@@ -96,7 +95,6 @@ const Wallet: Component = () => {
   const [unlocking, setUnlocking] = createSignal(false)
   const [selected, setSelected] = createSignal<Set<string>>(new Set())
   const [confirmClearSpent, setConfirmClearSpent] = createSignal(false)
-  const refreshingNotes = new Set<string>()
   // collapsed by default, same reasoning MintGroupCard used to have per
   // mint - now a single wallet-wide toggle since notes no longer live in
   // separate per-mint sections
@@ -303,11 +301,6 @@ const Wallet: Component = () => {
   const spentCount = createMemo(() => spentBearers().length)
   const spendableTotal = createMemo(() =>
     spendableBearers().reduce((sum, b) => sum + b.amount, 0)
-  )
-  const unknownTotal = createMemo(() =>
-    spendableBearers()
-      .filter(b => b.statusUnknown)
-      .reduce((sum, b) => sum + b.amount, 0)
   )
   const spentTotal = createMemo(() =>
     spentBearers().reduce((sum, b) => sum + b.amount, 0)
@@ -540,8 +533,6 @@ const Wallet: Component = () => {
   // persistBearer reads localStorage fresh after its own encrypt step, so
   // concurrent writes here could race and clobber each other's records
   const refreshOneBearer = async (bearer: Bearer) => {
-    if (refreshingNotes.has(bearer.id)) return
-    refreshingNotes.add(bearer.id)
     try {
       const client = deviceClient()
       const deviceId = bearer.deviceId
@@ -560,7 +551,6 @@ const Wallet: Component = () => {
           callback: result.callback,
           amount: result.amountMsat,
           verified: true,
-          statusUnknown: false,
           mintPubkey: result.mintPubkey ?? bearer.mintPubkey,
           deviceId: result.deviceId,
           deviceHash: result.deviceHash
@@ -587,7 +577,6 @@ const Wallet: Component = () => {
           callback: migrated.callback,
           amount: info.maxWithdrawable,
           verified: true,
-          statusUnknown: false,
           mintPubkey: info.mintPubkey ?? bearer.mintPubkey,
           deviceId: migrated.deviceId,
           deviceHash: migrated.deviceHash
@@ -649,7 +638,6 @@ const Wallet: Component = () => {
         callback: info.callback,
         amount: info.maxWithdrawable,
         verified: true,
-        statusUnknown: false,
         mintPubkey: info.mintPubkey ?? bearer.mintPubkey
       })
       logActivity(
@@ -672,32 +660,22 @@ const Wallet: Component = () => {
         notify('Note refreshed.', NotifyKind.SUCCESS)
       }
     } catch (err) {
-      // Only an explicit spent verdict locks the note. A hash lookup's
-      // unknown response cannot establish whether it was ever issued or
-      // spent, so keep the note and surface an actionable local status.
+      // the service just told us - unambiguously, this GET named exactly
+      // this note's own k1 - that it's already spent. Trust it and lock
+      // the note the same way markSpent() does, rather than leave it
+      // sitting there looking spendable until someone notices by hand.
       if (err instanceof NoteSpentError) {
-        await updateBearer(bearer.id, {spent: true, statusUnknown: false})
+        await updateBearer(bearer.id, {spent: true})
+        if (bearer.deviceId) {
+          await markDeviceNoteSpent(deviceClient(), bearer.deviceId)
+        }
         logActivity(
           'spent',
           `${serverOf(bearer.url)} reports ${msatToSats(bearer.amount)} sats as already spent - marked spent locally.`,
           bearer.label
         )
-        notify(
-          'Already spent - marked spent in this wallet.',
-          NotifyKind.SUCCESS
-        )
-        return
-      }
-      if (err instanceof NoteUnknownError) {
-        await updateBearer(bearer.id, {statusUnknown: true})
-        notify(
-          'Status unknown. Your note has been kept; try refreshing it later.'
-        )
-        return
       }
       notify((err as Error).message, NotifyKind.ERROR)
-    } finally {
-      refreshingNotes.delete(bearer.id)
     }
   }
 
@@ -1605,12 +1583,6 @@ const Wallet: Component = () => {
                     <FiatValue msat={spendableTotal()} />
                   </span>
                   <span class="wallet-stat-label">Total balance</span>
-                  <Show when={unknownTotal() > 0}>
-                    <span class="wallet-stat-label">
-                      Includes {msatToSats(unknownTotal())} sats with unknown
-                      status
-                    </span>
-                  </Show>
                 </div>
                 <div class="wallet-stat">
                   <span class="wallet-stat-value">
