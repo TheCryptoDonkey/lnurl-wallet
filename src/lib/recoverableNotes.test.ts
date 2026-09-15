@@ -33,13 +33,14 @@ describe('bech32m codec', () => {
     expect(isCp1(encoded)).toBe(true)
   })
 
-  it("round-trips a ck1/cs1 (65 bytes) - past bech32/BIP-173's 90-char limit", () => {
-    const bytes = hexToBytes('cd'.repeat(65))
-    const ck1 = encodeCk1(bytes)
-    const cs1 = encodeCs1(bytes)
+  it("round-trips ck1 (96 bytes) and cs1 (65 bytes) past bech32/BIP-173's 90-char limit", () => {
+    const ckBytes = hexToBytes('cd'.repeat(96))
+    const csBytes = hexToBytes('ef'.repeat(65))
+    const ck1 = encodeCk1(ckBytes)
+    const cs1 = encodeCs1(csBytes)
     expect(ck1.length).toBeGreaterThan(90)
-    expect(decodeCk1(ck1)).toEqual(bytes)
-    expect(decodeCs1(cs1)).toEqual(bytes)
+    expect(decodeCk1(ck1)).toEqual(ckBytes)
+    expect(decodeCs1(cs1)).toEqual(csBytes)
     expect(isCk1(ck1)).toBe(true)
     expect(isCs1(cs1)).toBe(true)
   })
@@ -81,7 +82,7 @@ describe('bech32m codec', () => {
 
   it('throws when encoding the wrong payload length', () => {
     expect(() => encodeCp1(hexToBytes('ab'.repeat(31)))).toThrow()
-    expect(() => encodeCk1(hexToBytes('ab'.repeat(64)))).toThrow()
+    expect(() => encodeCk1(hexToBytes('ab'.repeat(95)))).toThrow()
     expect(() =>
       encodeCx1(hexToBytes('ab'.repeat(32)), hexToBytes('cd'.repeat(31)))
     ).toThrow()
@@ -179,8 +180,9 @@ describe('cs1WithAmount (LUD-25 Part 2 "encode amount in offline sig")', () => {
     })
 
     it('rejects anything that is neither', () => {
-      expect(decodeAnyCs1(encodeCk1(bytes))).toBeNull()
-      expect(isAnyCs1(encodeCk1(bytes))).toBe(false)
+      const ckPayload = hexToBytes('ab'.repeat(96))
+      expect(decodeAnyCs1(encodeCk1(ckPayload))).toBeNull()
+      expect(isAnyCs1(encodeCk1(ckPayload))).toBe(false)
     })
   })
 })

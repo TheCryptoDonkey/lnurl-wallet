@@ -171,45 +171,32 @@ describe('offline signature verification', () => {
 })
 
 describe('signNoteOwnership (LUD-25 Part 2, ck1)', () => {
-  // independently recomputes the fixed digest signNoteOwnership signs -
-  // deliberately not importing any internal helper, so this test would
-  // actually fail if the digest construction ever silently drifted
-  const fixedDigest = (): Uint8Array => {
-    const message = utf8ToBytes('LNURLcash')
-    return sha256(
-      sha256(
-        new Uint8Array([
-          ...utf8ToBytes('Lightning Signed Message:'),
-          ...message
-        ])
-      )
-    )
-  }
+  const message = utf8ToBytes('LNURLcash')
 
-  it("produces a signature that recovers to the signer's own x-only pubkey", () => {
+  it("embeds the signer's x-only pubkey and a valid Schnorr signature", () => {
     const secretKey = schnorr.utils.randomSecretKey()
     const pubkeyXOnly = schnorr.getPublicKey(secretKey)
-    const sig = signNoteOwnership(secretKey)
-    expect(sig).toHaveLength(65)
-
-    // sig is wire format (r||s||recid, trailing) - @noble/curves'
-    // recoverPublicKey expects recid-leading for raw bytes (the same
-    // reason verifyNoteSignatureDigest itself reorders before calling it),
-    // so reorder back before recovering
-    const recidLeading = new Uint8Array([sig[64]!, ...sig.subarray(0, 64)])
-    const recovered = secp256k1.recoverPublicKey(recidLeading, fixedDigest(), {
-      prehash: false
-    })
-    // recoverPublicKey gives a full compressed point - the x-only note id
-    // is everything after the 02/03 prefix byte, same as the mint's own
-    // recover_note_pubkey (PublicKey.format(compressed=True)[1:])
-    expect(bytesToHex(recovered.subarray(1))).toBe(bytesToHex(pubkeyXOnly))
+    const payload = signNoteOwnership(secretKey)
+    expect(payload).toHaveLength(96)
+    expect(payload.subarray(0, 32)).toEqual(pubkeyXOnly)
+    expect(schnorr.verify(payload.subarray(32), message, pubkeyXOnly)).toBe(
+      true
+    )
   })
 
   it('is deterministic for the same secret key', () => {
     const secretKey = schnorr.utils.randomSecretKey()
     expect(bytesToHex(signNoteOwnership(secretKey))).toBe(
       bytesToHex(signNoteOwnership(secretKey))
+    )
+  })
+
+  it('matches the shared conformance vector byte-for-byte', () => {
+    const secretKey = hexToBytes(
+      '6257b20051d8bf990abef9274b05eec72deed8f6a6adae958e91ceb51e06136a'
+    )
+    expect(encodeCk1(signNoteOwnership(secretKey))).toBe(
+      'ck1t48us5upk2653jqzm94rhwvv9vnclm6kdeygs4z6hu0tkleml3ulwhtn60lj3h29m7mmztrgtlehqzuqg6e2n0ct3mrldefxv50jpeg2d7ns73eqn6c8duewvhgq28wfultlwu0jhcyp7ag4x35k39t4puvjejfa'
     )
   })
 
@@ -282,7 +269,13 @@ describe('recoverNoteOwnershipPubkey', () => {
 
   it('returns null for a malformed signature rather than throwing', () => {
     expect(recoverNoteOwnershipPubkey(new Uint8Array(10))).toBeNull()
-    expect(recoverNoteOwnershipPubkey(new Uint8Array(65))).toBeNull()
+    expect(recoverNoteOwnershipPubkey(new Uint8Array(96))).toBeNull()
+  })
+
+  it('returns null when the embedded signature does not match the key', () => {
+    const payload = signNoteOwnership(schnorr.utils.randomSecretKey())
+    payload[95] = payload[95]! ^ 1
+    expect(recoverNoteOwnershipPubkey(payload)).toBeNull()
   })
 })
 
@@ -302,60 +295,35 @@ describe('cp1FromCk1', () => {
 })
 
 describe('signAddressProof (LUD-25 Part 2, un-/register)', () => {
-  // independently recomputes the per-action/username digest - deliberately
-  // not importing any internal helper, mirrors signNoteOwnership's own
-  // fixedDigest test above
-  const digestFor = (action: 'register' | 'unregister', username: string) => {
-    const message = utf8ToBytes(`LNURLcash:${action}:${username}`)
-    return sha256(
-      sha256(
-        new Uint8Array([
-          ...utf8ToBytes('Lightning Signed Message:'),
-          ...message
-        ])
-      )
-    )
-  }
+  const messageFor = (action: 'register' | 'unregister', username: string) =>
+    utf8ToBytes(`LNURLcash:${action}:${username}`)
 
-  it("recovers to the branch key's own pubkey for the exact action/username signed", () => {
-    const secretKey = secp256k1.utils.randomSecretKey()
-    const pubkeyHex = bytesToHex(secp256k1.getPublicKey(secretKey, true))
+  it("verifies against the branch key's x-only pubkey for the exact action/username signed", () => {
+    const secretKey = schnorr.utils.randomSecretKey()
+    const pubkey = schnorr.getPublicKey(secretKey)
     const sig = signAddressProof(secretKey, 'register', 'alice')
-    expect(sig).toHaveLength(65)
-
-    const recidLeading = new Uint8Array([sig[64]!, ...sig.subarray(0, 64)])
-    const recovered = secp256k1.recoverPublicKey(
-      recidLeading,
-      digestFor('register', 'alice'),
-      {prehash: false}
+    expect(sig).toHaveLength(64)
+    expect(schnorr.verify(sig, messageFor('register', 'alice'), pubkey)).toBe(
+      true
     )
-    expect(bytesToHex(recovered)).toBe(pubkeyHex)
   })
 
   it('is domain-separated by action - a register proof does not verify as unregister', () => {
-    const secretKey = secp256k1.utils.randomSecretKey()
-    const pubkeyHex = bytesToHex(secp256k1.getPublicKey(secretKey, true))
+    const secretKey = schnorr.utils.randomSecretKey()
+    const pubkey = schnorr.getPublicKey(secretKey)
     const sig = signAddressProof(secretKey, 'register', 'alice')
-    const recidLeading = new Uint8Array([sig[64]!, ...sig.subarray(0, 64)])
-    const recovered = secp256k1.recoverPublicKey(
-      recidLeading,
-      digestFor('unregister', 'alice'),
-      {prehash: false}
+    expect(schnorr.verify(sig, messageFor('unregister', 'alice'), pubkey)).toBe(
+      false
     )
-    expect(bytesToHex(recovered)).not.toBe(pubkeyHex)
   })
 
   it('is domain-separated by username - a proof for one name does not verify for another', () => {
-    const secretKey = secp256k1.utils.randomSecretKey()
-    const pubkeyHex = bytesToHex(secp256k1.getPublicKey(secretKey, true))
+    const secretKey = schnorr.utils.randomSecretKey()
+    const pubkey = schnorr.getPublicKey(secretKey)
     const sig = signAddressProof(secretKey, 'register', 'alice')
-    const recidLeading = new Uint8Array([sig[64]!, ...sig.subarray(0, 64)])
-    const recovered = secp256k1.recoverPublicKey(
-      recidLeading,
-      digestFor('register', 'bob'),
-      {prehash: false}
+    expect(schnorr.verify(sig, messageFor('register', 'bob'), pubkey)).toBe(
+      false
     )
-    expect(bytesToHex(recovered)).not.toBe(pubkeyHex)
   })
 
   it('is deterministic for the same key/action/username', () => {

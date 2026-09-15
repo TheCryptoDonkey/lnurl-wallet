@@ -7,7 +7,7 @@
 //   1. bech32m (BIP-350, NOT the classic bech32/BIP-173 this repo's own
 //      LUD-01 lnurl encoding in urls.ts uses) codecs for the 4 new fixed-
 //      length value types: cp1 (a note's pubkey commitment), ck1 (a
-//      recoverable ownership signature - the note's actual bearer secret),
+//      pubkey plus Schnorr ownership signature - the note's actual bearer secret),
 //      cs1 (a SERVICE issuance certificate), cx1 (a watch-only branch
 //      export: pubkey + chain code).
 //   2. The non-hardened, taproot-style per-note key tweak a watch-only cx1
@@ -31,7 +31,8 @@ import {encodeBolt11AmountSuffix, decodeBolt11AmountSuffix} from './bolt11'
 // LUD-01 encoding does (that one has no fixed payload length to pin
 // instead). This is also why @scure/base's own higher-level
 // encodeFromBytes/decodeToBytes helpers aren't used - they hardcode
-// BIP-173's ~90-char default limit, which ck1/cs1 (65 bytes) exceed.
+// BIP-173's ~90-char default limit, which ck1 (96 bytes) and cs1 (65 bytes)
+// exceed.
 const encodeFixed = (
   hrp: string,
   bytes: Uint8Array,
@@ -66,10 +67,10 @@ export const decodeCp1 = (value: string): Uint8Array | null =>
   decodeFixed('cp', value, 32)
 export const isCp1 = (value: string): boolean => decodeCp1(value) !== null
 
-export const encodeCk1 = (signature: Uint8Array): string =>
-  encodeFixed('ck', signature, 65)
+export const encodeCk1 = (payload: Uint8Array): string =>
+  encodeFixed('ck', payload, 96)
 export const decodeCk1 = (value: string): Uint8Array | null =>
-  decodeFixed('ck', value, 65)
+  decodeFixed('ck', value, 96)
 export const isCk1 = (value: string): boolean => decodeCk1(value) !== null
 
 // LEGACY, fixed-HRP form: a cs1 certificate with no amount encoded in it

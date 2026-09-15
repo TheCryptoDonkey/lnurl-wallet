@@ -1,5 +1,5 @@
 import {sha256} from '@noble/hashes/sha2.js'
-import {secp256k1} from '@noble/curves/secp256k1.js'
+import {schnorr, secp256k1} from '@noble/curves/secp256k1.js'
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
 import {AmbiguousMintError} from './errors'
 import {
@@ -191,69 +191,47 @@ export const verifyNoteSignatureHash = (
 // The one signing function in this file - everything above only verifies.
 // Signs a FIXED message (the same for every note, every request, unlike
 // noteSignatureDigest's per-note/per-amount one above) - a cp1 note's
-// bearer secret IS this signature; SERVICE recovers the note's own pubkey
-// from it (ecrecover) exactly like verifyNoteSignatureDigest above
-// recovers against a known mintPubkey, just checking for existence in its
-// note table instead of string-equality against one pinned key.
+// bearer secret IS the note's x-only pubkey plus a BIP-340 Schnorr signature
+// over this message. SERVICE verifies the embedded pubkey and checks for that
+// key in its note table.
 const NOTE_OWNERSHIP_MESSAGE = utf8ToBytes('LNURLcash')
+const ZERO_AUX_RANDOMNESS = new Uint8Array(32)
 
-const noteOwnershipDigest = (): Uint8Array =>
-  sha256(
-    sha256(
-      new Uint8Array([
-        ...LIGHTNING_SIGNED_MESSAGE_PREFIX,
-        ...NOTE_OWNERSHIP_MESSAGE
-      ])
-    )
-  )
-
-// returns the raw 65-byte r‖s‖recovery-id signature - callers bech32m-encode
-// it as ck1 (see src/lib/recoverableNotes.ts's encodeCk1) for the wire. Takes and
-// returns raw bytes rather than hex: unlike a k1 preimage, this secret is a
-// genuine secp256k1 scalar (see src/lib/recoverableNotes.ts's
-// deriveNoteSecretKey), never text.
+// Returns the 96-byte x-only-pubkey‖Schnorr-signature payload which callers
+// bech32m-encode as ck1. Takes and returns raw bytes: unlike a k1 preimage, the
+// input is a genuine secp256k1 scalar, never text.
 export const signNoteOwnership = (secretKey: Uint8Array): Uint8Array => {
-  // noble's 'recovered' format is empirically recovery-id-first (rec || r
-  // || s) - the wire format (and this codebase's own signAsMint test
-  // helper, which this mirrors) is r || s || recovery-id, so reorder.
-  // prehash:false: the digest here is already the final double-sha256 a
-  // real signer signs directly - the default prehash:true would hash it
-  // again, producing a signature SERVICE could never recover against this
-  // note's own pubkey
-  const libSig = secp256k1.sign(noteOwnershipDigest(), secretKey, {
-    format: 'recovered',
-    prehash: false
-  })
-  return new Uint8Array([...libSig.subarray(1), libSig[0]!])
+  const pubkey = schnorr.getPublicKey(secretKey)
+  // The ck1 is the deterministic bearer secret reconstructed during a seed
+  // recovery, not a fresh request signature. Fixed all-zero BIP-340 aux input
+  // makes the same key reproduce the exact same ck1 while BIP-340 still
+  // derives its nonce from the secret key and message.
+  const signature = schnorr.sign(
+    NOTE_OWNERSHIP_MESSAGE,
+    secretKey,
+    ZERO_AUX_RANDOMNESS
+  )
+  return new Uint8Array([...pubkey, ...signature])
 }
 
-// the inverse of signNoteOwnership: recovers the x-only pubkey a ck1 this
-// wallet itself produced belongs to, WITHOUT contacting SERVICE - lets a
+// Validates and extracts the embedded x-only pubkey from a ck1 payload without
+// contacting SERVICE - lets a
 // cp1 note's own bearer secret (its ck1) be looked up by public commitment
 // (p=cp1<pk>, see request.ts's fetchNoteInfo) instead of by the secret
 // itself, the same privacy reasoning hashK1 already gives legacy notes.
-// Unlike verifyNoteSignatureDigest above (which tolerates either byte
-// order because it verifies signatures OTHER implementations produced),
-// this only ever recovers a signature signNoteOwnership itself just made,
-// which is always wire format (r||s||recovery-id, trailing) - one
-// ordering, no need to guess. Returns null rather than throwing on a
-// malformed signature (mirrors verifyNoteSignature*'s own "unverifiable,
+// Returns null rather than throwing on a malformed or invalid payload
+// (mirrors verifyNoteSignature*'s own "unverifiable,
 // not a crash" convention).
 export const recoverNoteOwnershipPubkey = (
-  signature: Uint8Array
+  payload: Uint8Array
 ): Uint8Array | null => {
-  if (signature.length !== 65) return null
+  if (payload.length !== 96) return null
+  const pubkey = payload.subarray(0, 32)
+  const signature = payload.subarray(32)
   try {
-    const recidLeading = new Uint8Array([
-      signature[64]!,
-      ...signature.subarray(0, 64)
-    ])
-    const recovered = secp256k1.recoverPublicKey(
-      recidLeading,
-      noteOwnershipDigest(),
-      {prehash: false}
-    )
-    return recovered.subarray(1) // x-only: drop the 02/03 compressed prefix
+    return schnorr.verify(signature, NOTE_OWNERSHIP_MESSAGE, pubkey)
+      ? pubkey
+      : null
   } catch {
     return null
   }
@@ -264,8 +242,8 @@ export const recoverNoteOwnershipPubkey = (
 // Proof that SERVICE requires before overwriting an already-claimed
 // username, or before unregistering one at all (25.md: "Registering, or
 // later unregistering, a username against a cx1 MUST be proven, not just
-// asserted"). Same recoverable-ECDSA construction as signNoteOwnership
-// above, over a per-action, per-username message instead of one fixed
+// asserted"). Same BIP-340 Schnorr construction as signNoteOwnership above,
+// over a per-action, per-username message instead of one fixed
 // value - domain-separated so a signature captured for one action/
 // username can never be replayed as the other, or against a different
 // username sharing the same branch. Signed with the branch's own index-0
@@ -275,17 +253,12 @@ export const recoverNoteOwnershipPubkey = (
 // per-request key.
 export type AddressProofAction = 'register' | 'unregister'
 
-const addressProofDigest = (
+const addressProofMessage = (
   action: AddressProofAction,
   username: string
-): Uint8Array => {
-  const message = utf8ToBytes(`LNURLcash:${action}:${username}`)
-  return sha256(
-    sha256(new Uint8Array([...LIGHTNING_SIGNED_MESSAGE_PREFIX, ...message]))
-  )
-}
+): Uint8Array => utf8ToBytes(`LNURLcash:${action}:${username}`)
 
-// returns the raw 65-byte r‖s‖recovery-id signature - callers hex-encode
+// Returns the raw 64-byte Schnorr signature - callers hex-encode
 // it for the wire (SERVICE's `sig` query param), same as any other plain-
 // hex signature in this kit (see NOTE_SIGNATURE_PATTERN), not bech32m:
 // unlike ck1/cs1 this value is never a note's own bearer secret or
@@ -295,12 +268,11 @@ export const signAddressProof = (
   action: AddressProofAction,
   username: string
 ): Uint8Array => {
-  const libSig = secp256k1.sign(
-    addressProofDigest(action, username),
+  return schnorr.sign(
+    addressProofMessage(action, username),
     branchIndexZeroSecretKey,
-    {format: 'recovered', prehash: false}
+    ZERO_AUX_RANDOMNESS
   )
-  return new Uint8Array([...libSig.subarray(1), libSig[0]!])
 }
 
 // the public commitment a wallet-generated ck1 secret names, computed

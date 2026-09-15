@@ -10,7 +10,7 @@ import {deriveNotePubkey, encodeCp1, type Cx1} from './recoverableNotes'
 afterEach(() => vi.unstubAllGlobals())
 
 const MINT_KEY = `02${'11'.repeat(32)}`
-const SIG_PATTERN = /^[0-9a-f]{130}$/
+const SIG_PATTERN = /^[0-9a-f]{128}$/
 
 describe('registerUsername', () => {
   it('POSTs cx1 and a sig proof to /p/{username}', async () => {
