@@ -46,7 +46,7 @@ export const encodeBolt11AmountSuffix = (amountMsat: number): string => {
     throw new Error('amount_msat must be a non-negative integer.')
   }
   for (const multiplier of ['', 'm', 'u', 'n', 'p'] as const) {
-    const digits = amountMsat / BOLT11_AMOUNT_MSAT_PER_UNIT[multiplier]
+    const digits = amountMsat / BOLT11_AMOUNT_MSAT_PER_UNIT[multiplier]!
     if (Number.isInteger(digits)) return `${digits}${multiplier}`
   }
   // unreachable: 'p' above always divides an integer amountMsat exactly
@@ -63,7 +63,7 @@ export const decodeBolt11AmountSuffix = (suffix: string): number | null => {
   const match = suffix.match(/^(\d+)([munp])?$/)
   if (!match) return null
   const [, digits, multiplier] = match
-  const msat = Number(digits) * BOLT11_AMOUNT_MSAT_PER_UNIT[multiplier ?? '']
+  const msat = Number(digits) * BOLT11_AMOUNT_MSAT_PER_UNIT[multiplier ?? '']!
   return Number.isSafeInteger(msat) ? msat : null
 }
 
