@@ -163,6 +163,50 @@ describe('mint address identity', () => {
   })
 })
 
+describe('mint address node identity', () => {
+  const explicitKey = `03${'22'.repeat(32)}`
+  const uriKey = `02${'33'.repeat(32)}`
+
+  const respondWithMintAddress = (extra: Record<string, unknown>) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            json: async () => ({
+              tag: 'withdrawRequest',
+              callback: 'https://mint.example.com/w/cb',
+              maxWithdrawable: 0,
+              payLink: 'https://mint.example.com/.well-known/lnurlp/mint',
+              mintPubkey: MINT_KEY,
+              ...extra
+            })
+          }) as Response
+      )
+    )
+  }
+
+  it('prefers an explicit nodePubkey over the nodeUri prefix', async () => {
+    respondWithMintAddress({
+      nodePubkey: explicitKey,
+      nodeUri: `${uriKey}@127.0.0.1:9735`
+    })
+    await expect(
+      fetchMintAddress('https://mint.example.com/.well-known/lnurlw/mint')
+    ).resolves.toMatchObject({nodePubkey: explicitKey})
+  })
+
+  it('falls back to the nodeUri prefix when nodePubkey is invalid', async () => {
+    respondWithMintAddress({
+      nodePubkey: 'not-a-node-key',
+      nodeUri: `${uriKey}@127.0.0.1:9735`
+    })
+    await expect(
+      fetchMintAddress('https://mint.example.com/.well-known/lnurlw/mint')
+    ).resolves.toMatchObject({nodePubkey: uriKey})
+  })
+})
+
 describe('LUD-25 Part 2: cp1/ck1/cs1 dual-mode support', () => {
   const secretKey = schnorr.utils.randomSecretKey()
   const pubkeyXOnly = schnorr.getPublicKey(secretKey)
