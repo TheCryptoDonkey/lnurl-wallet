@@ -96,6 +96,22 @@ npm run tsc     # typecheck
 npm run build   # static build in dist/
 ```
 
+The wallet-independent protocol layer in [`src/lib`](./src/lib) is also the
+source of the `@lnurlcash/kit` npm package. It has its own locked dependency
+tree and stricter package gate:
+
+```sh
+cd src/lib
+npm ci
+npm run check
+npm pack --dry-run
+```
+
+The wallet and package share a version: a `vX.Y.Z` tag deploys wallet `X.Y.Z`
+and the dedicated `release-kit.yml` trusted-publishing workflow publishes
+`@lnurlcash/kit@X.Y.Z` from the same commit. The package workflow rejects a tag
+that does not exactly match `src/lib/package.json`.
+
 For an end-to-end local loop, run [lnurl-mint](https://github.com/lnurlcash/lnurl-mint)
 (`uv run fastapi dev lnurl_mint/server.py`) and point the Mint page at
 `localhost:8000` - insecure hosts (localhost, 127.0.0.1, .onion) are
