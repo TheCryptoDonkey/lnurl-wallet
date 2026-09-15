@@ -92,6 +92,7 @@ export class NoteUnknownError extends Error {
 export const classifyNoteError = (err: Error): Error => {
   if (!(err instanceof ServiceError)) return err
   const reason = err.reason
+  if (reason === 'pending') return new PendingNoteError()
   if (/spent/i.test(reason)) return new NoteSpentError(reason)
   if (/unknown|not found/i.test(reason)) return new NoteUnknownError(reason)
   return err

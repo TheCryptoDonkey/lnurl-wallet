@@ -12,7 +12,7 @@ import {
 } from './request'
 import {hashK1, signNoteOwnership, cp1FromCk1} from './signature'
 import {encodeCk1, encodeCp1, encodeCs1} from './recoverableNotes'
-import {AmbiguousMintError} from './errors'
+import {AmbiguousMintError, PendingNoteError} from './errors'
 import {configureSecretProvider, configurePubkeySecretProvider} from './secrets'
 
 const K1 = 'a'.repeat(64)
@@ -94,6 +94,21 @@ describe('mandatory offline-verification fields', () => {
       )
     )
     await expect(fetchNoteInfo(NOTE_URL)).rejects.toThrow(/mintPubkey/)
+  })
+
+  it('classifies a pending informational lookup', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            json: async () => ({status: 'ERROR', reason: 'pending'})
+          }) as Response
+      )
+    )
+    await expect(fetchNoteInfo(NOTE_URL)).rejects.toBeInstanceOf(
+      PendingNoteError
+    )
   })
 
   it('preserves mutation outputs when an OK response omits sig', async () => {
