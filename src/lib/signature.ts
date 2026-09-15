@@ -3,7 +3,8 @@ import {secp256k1} from '@noble/curves/secp256k1.js'
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
 import {AmbiguousMintError} from './errors'
 import {
-  decodeAnyCs1,
+  decodeCs1,
+  decodeCs1WithAmount,
   isAnyCs1,
   isCk1,
   decodeCk1,
@@ -73,21 +74,27 @@ const noteSignatureDigest = (k1: string, amountMsat: number): Uint8Array =>
 // preserves whichever one it actually sent rather than normalizing it
 // away), dispatched by shape here at the one place that actually needs
 // raw bytes, same convention as every other dual-mode field in this kit.
-const normalizeSignatureHex = (signature: string): string | null => {
+const normalizeSignatureHex = (
+  signature: string,
+  expectedAmountMsat: number
+): string | null => {
   if (NOTE_SIGNATURE_PATTERN.test(signature)) return signature.toLowerCase()
-  // accepts either cs1 wire shape (current amount-encoding form or the
-  // legacy fixed-HRP one) transparently - see recoverableNotes.ts's
-  // decodeAnyCs1
-  const decoded = decodeAnyCs1(signature)
+  const current = decodeCs1WithAmount(signature)
+  // The current wire carries the amount as well as signing it. Both claims
+  // must agree; otherwise a copied payload under a different cs HRP would be
+  // accepted while reporting an amount the signer never certified.
+  if (current && current.amountMsat !== expectedAmountMsat) return null
+  const decoded = current?.signature ?? decodeCs1(signature)
   return decoded ? bytesToHex(decoded) : null
 }
 
 const verifyNoteSignatureDigest = (
   digest: Uint8Array,
   signature: string,
-  mintPubkeyHex: string
+  mintPubkeyHex: string,
+  expectedAmountMsat: number
 ): boolean => {
-  const signatureHex = normalizeSignatureHex(signature)
+  const signatureHex = normalizeSignatureHex(signature, expectedAmountMsat)
   if (!signatureHex) return false
   let wireSig: Uint8Array
   try {
@@ -149,7 +156,8 @@ export const verifyNoteSignature = (
     return verifyNoteSignatureDigest(
       noteSignatureDigest(k1, amountMsat),
       signatureHex,
-      mintPubkeyHex
+      mintPubkeyHex,
+      amountMsat
     )
   } catch {
     // A malformed stored k1 is unverifiable, never a render-time crash.
@@ -170,7 +178,8 @@ export const verifyNoteSignatureHash = (
     return verifyNoteSignatureDigest(
       noteSignatureDigestForHash(h, amountMsat),
       signatureHex,
-      mintPubkeyHex
+      mintPubkeyHex,
+      amountMsat
     )
   } catch {
     return false

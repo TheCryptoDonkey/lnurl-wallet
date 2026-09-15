@@ -313,11 +313,17 @@ export const fetchMintAddress = async (
   }
   const {mintPubkey, nodeCapacity, outstandingNotesMsat, ...rest} = body
   const signingKey = parseMintKey({mintPubkey})
+  const explicitNodePubkey =
+    typeof body.nodePubkey === 'string' &&
+    MINT_PUBKEY_PATTERN.test(body.nodePubkey)
+      ? body.nodePubkey.toLowerCase()
+      : undefined
   const nodePubkey =
-    typeof body.nodeUri === 'string' &&
+    explicitNodePubkey ??
+    (typeof body.nodeUri === 'string' &&
     MINT_PUBKEY_PATTERN.test(body.nodeUri.split('@')[0] ?? '')
       ? body.nodeUri.split('@')[0]!.toLowerCase()
-      : undefined
+      : undefined)
   return {
     ...rest,
     ...signingKey,
@@ -426,7 +432,7 @@ export const meltNote = async (
 // generateSecret(). rotateNote/splitNote/mergeNotes below are just the
 // caller-generates-its-own-secret case of these.
 
-export type HashedMutationResult = {signature: string}
+export type HashedMutationResult = {signature?: string}
 
 // LUD-25 Part 2 renamed /w/cb's h/h2 to p1/p2 - h/h2 are still accepted
 // forever as the old names (SERVICE aliases them), so a plain hash keeps
@@ -446,6 +452,24 @@ const outputFieldName = (value: string, suffix: '1' | '2'): string =>
     ? OUTPUT_FIELD_NAMES[suffix].current
     : OUTPUT_FIELD_NAMES[suffix].legacy
 
+// Part 2 public-key outputs must be certified. A plain hash output is
+// deliberately unsigned: there is no public note identifier to certify
+// without disclosing its bearer secret. If an older SERVICE still supplies a
+// well-formed optional signature for a hash, preserve it; otherwise absence or
+// malformed optional proof does not make the landed note unusable.
+const mutationSignature = (
+  body: any,
+  field: 'sig' | 'sig2',
+  output: string
+): string | undefined => {
+  if (isCp1(output)) return requireMutationSignature(body, field)
+  try {
+    return requireMutationSignature(body, field)
+  } catch {
+    return undefined
+  }
+}
+
 export const rotateNoteWithHash = async (
   callback: string,
   k1: string,
@@ -455,12 +479,13 @@ export const rotateNoteWithHash = async (
     ['k1', k1],
     [outputFieldName(h, '1'), h]
   ])
-  return {signature: requireMutationSignature(body, 'sig')}
+  const signature = mutationSignature(body, 'sig', h)
+  return signature === undefined ? {} : {signature}
 }
 
 export type HashedSplitResult = {
-  signature: string
-  changeSignature: string
+  signature?: string
+  changeSignature?: string
 }
 
 export const splitNoteWithHash = async (
@@ -476,9 +501,11 @@ export const splitNoteWithHash = async (
     [outputFieldName(h, '1'), h],
     [outputFieldName(h2, '2'), h2]
   ])
+  const signature = mutationSignature(body, 'sig', h)
+  const changeSignature = mutationSignature(body, 'sig2', h2)
   return {
-    signature: requireMutationSignature(body, 'sig'),
-    changeSignature: requireMutationSignature(body, 'sig2')
+    ...(signature === undefined ? {} : {signature}),
+    ...(changeSignature === undefined ? {} : {changeSignature})
   }
 }
 
@@ -491,10 +518,11 @@ export const mergeNotesWithHash = async (
     ...k1s.map((k1): [string, string] => ['k1', k1]),
     [outputFieldName(h, '1'), h]
   ])
-  return {signature: requireMutationSignature(body, 'sig')}
+  const signature = mutationSignature(body, 'sig', h)
+  return signature === undefined ? {} : {signature}
 }
 
-export type RotateResult = {k1: string; signature: string}
+export type RotateResult = {k1: string; signature?: string}
 
 // LUD-25 Part 2: an output whose OWN k1 is already ck1-shaped proves key
 // ownership already - reissuing it as a legacy preimage on every rotate/
@@ -564,9 +592,9 @@ export const rotateNote = async (
 
 export type SplitResult = {
   k1: string
-  signature: string
+  signature?: string
   change: string
-  changeSignature: string
+  changeSignature?: string
 }
 
 // split: burn one or many k1s (LUD-25: "one or many | no | yes"), mint one

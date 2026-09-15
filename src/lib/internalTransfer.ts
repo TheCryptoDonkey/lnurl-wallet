@@ -75,7 +75,7 @@ export type InternalTransferResult =
       index: number
       signature: string
       change: string
-      changeSignature: string
+      changeSignature?: string
     }
 
 // burns k1s (one note, or several - same "one or many" input shape every
@@ -112,6 +112,8 @@ export const payInternalTransfer = async (
           k1s,
           recipientOutput
         )
+        if (!signature)
+          throw new Error('Recipient cp1 output has no certificate.')
         return {kind: 'merge', index, signature}
       } catch (err) {
         if (isIndexInUse(err)) {
@@ -133,6 +135,8 @@ export const payInternalTransfer = async (
         recipientOutput,
         disclosedValue(changeK1)
       )
+      if (!result.signature)
+        throw new Error('Recipient cp1 output has no certificate.')
       return {
         kind: 'split',
         index,
