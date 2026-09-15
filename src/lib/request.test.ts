@@ -122,6 +122,37 @@ describe('mandatory offline-verification fields', () => {
     ).resolves.toEqual({})
   })
 
+  it('preserves a valid optional certificate on a plain-hash output', async () => {
+    const certificate = '00'.repeat(65)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            json: async () => ({status: 'OK', sig: certificate})
+          }) as Response
+      )
+    )
+    await expect(
+      rotateNoteWithHash('https://mint.example.com/w/cb', K1, 'b'.repeat(64))
+    ).resolves.toEqual({signature: certificate})
+  })
+
+  it('ignores a malformed optional certificate on a plain-hash output', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            json: async () => ({status: 'OK', sig: 'not-a-signature'})
+          }) as Response
+      )
+    )
+    await expect(
+      rotateNoteWithHash('https://mint.example.com/w/cb', K1, 'b'.repeat(64))
+    ).resolves.toEqual({})
+  })
+
   it('accepts two unsigned plain-hash split outputs', async () => {
     vi.stubGlobal(
       'fetch',
