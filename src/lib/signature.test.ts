@@ -158,6 +158,8 @@ describe('offline signature verification', () => {
     expect(
       verifyNoteSignatureHash(hashK1(K1), amountMsat, sigCs1, pubHex)
     ).toBe(true)
+    const relabelled = encodeCs1WithAmount(amountMsat + 1, hexToBytes(sigHex))
+    expect(verifyNoteSignature(K1, amountMsat, relabelled, pubHex)).toBe(false)
     const otherPub = bytesToHex(
       secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true)
     )

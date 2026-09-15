@@ -3,6 +3,7 @@ import {schnorr} from '@noble/curves/secp256k1.js'
 import {
   fetchNoteInfo,
   fetchNoteInfoByPubkey,
+  fetchMintAddress,
   rotateNoteWithHash,
   splitNoteWithHash,
   mergeNotesWithHash,
@@ -12,7 +13,7 @@ import {
 } from './request'
 import {hashK1, signNoteOwnership, cp1FromCk1} from './signature'
 import {encodeCk1, encodeCp1, encodeCs1} from './recoverableNotes'
-import {AmbiguousMintError} from './errors'
+import {AmbiguousMintError, PendingNoteError} from './errors'
 import {configureSecretProvider, configurePubkeySecretProvider} from './secrets'
 
 const K1 = 'a'.repeat(64)
@@ -96,25 +97,35 @@ describe('mandatory offline-verification fields', () => {
     await expect(fetchNoteInfo(NOTE_URL)).rejects.toThrow(/mintPubkey/)
   })
 
-  it('preserves mutation outputs when an OK response omits sig', async () => {
+  it('classifies a pending informational lookup', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            json: async () => ({status: 'ERROR', reason: 'pending'})
+          }) as Response
+      )
+    )
+    await expect(fetchNoteInfo(NOTE_URL)).rejects.toBeInstanceOf(
+      PendingNoteError
+    )
+  })
+
+  it('accepts an unsigned plain-hash output', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({json: async () => ({status: 'OK'})}) as Response)
     )
     await expect(
       rotateNoteWithHash('https://mint.example.com/w/cb', K1, 'b'.repeat(64))
-    ).rejects.toBeInstanceOf(AmbiguousMintError)
+    ).resolves.toEqual({})
   })
 
-  it('requires both signatures for a split', async () => {
+  it('accepts two unsigned plain-hash split outputs', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(
-        async () =>
-          ({
-            json: async () => ({status: 'OK', sig: '00'.repeat(65)})
-          }) as Response
-      )
+      vi.fn(async () => ({json: async () => ({status: 'OK'})}) as Response)
     )
     await expect(
       splitNoteWithHash(
@@ -124,7 +135,31 @@ describe('mandatory offline-verification fields', () => {
         'b'.repeat(64),
         'c'.repeat(64)
       )
-    ).rejects.toThrow(/sig2/)
+    ).resolves.toEqual({})
+  })
+})
+
+describe('mint address identity', () => {
+  it('keeps an explicitly published nodePubkey without requiring nodeUri', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            json: async () => ({
+              tag: 'withdrawRequest',
+              callback: 'https://mint.example.com/w/cb',
+              maxWithdrawable: 0,
+              payLink: 'https://mint.example.com/.well-known/lnurlp/mint',
+              mintPubkey: MINT_KEY,
+              nodePubkey: MINT_KEY
+            })
+          }) as Response
+      )
+    )
+    await expect(
+      fetchMintAddress('https://mint.example.com/.well-known/lnurlw/mint')
+    ).resolves.toMatchObject({nodePubkey: MINT_KEY})
   })
 })
 
@@ -133,6 +168,16 @@ describe('LUD-25 Part 2: cp1/ck1/cs1 dual-mode support', () => {
   const pubkeyXOnly = schnorr.getPublicKey(secretKey)
   const ck1 = encodeCk1(signNoteOwnership(secretKey))
   const cp1 = encodeCp1(pubkeyXOnly)
+
+  it('still requires a certificate for a cp1 output', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({json: async () => ({status: 'OK'})}) as Response)
+    )
+    await expect(
+      rotateNoteWithHash('https://mint.example.com/w/cb', K1, cp1)
+    ).rejects.toBeInstanceOf(AmbiguousMintError)
+  })
   const CK1_NOTE_URL = `https://mint.example.com/withdraw?k1=${ck1}&amount=21000`
 
   it('looks a ck1 note up by its public commitment (p=cp1<pk>), never its secret', async () => {
